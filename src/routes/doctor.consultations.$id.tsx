@@ -146,26 +146,7 @@ function Page() {
   };
 
   return (
-    <div className="p-6 grid gap-4 xl:grid-cols-[280px_1fr_360px] lg:grid-cols-[1fr_360px]">
-      {/* Patient context */}
-      <aside className="space-y-3 hidden xl:block">
-        <div className="text-xs font-mono uppercase tracking-widest text-muted-foreground">Patient context</div>
-        <Card className="p-4 text-sm space-y-1">
-          <div className="font-semibold">{patient.fullName}</div>
-          <div className="text-xs text-muted-foreground font-mono">{patient.mrn}</div>
-          <div className="text-xs">{patient.age}y · {patient.gender} · {patient.bloodGroup}</div>
-          <div className="text-xs pt-2 border-t mt-2"><span className="text-muted-foreground">Allergies: </span>{patient.allergies.join(", ")}</div>
-          <div className="text-xs"><span className="text-muted-foreground">Chronic: </span>{patient.chronic.join(", ")}</div>
-          <div className="text-xs"><span className="text-muted-foreground">Meds: </span>{patient.currentMeds.join(", ")}</div>
-        </Card>
-        <Card className="p-4 text-xs space-y-2">
-          <div className="font-semibold text-sm">Recent timeline</div>
-          {timeline.slice(0, 4).map((t, i) => (
-            <div key={i}><span className="font-mono text-muted-foreground">{t.date}</span> · {t.title}</div>
-          ))}
-        </Card>
-      </aside>
-
+    <div className="p-6 grid gap-4 lg:grid-cols-[1fr_360px]">
       {/* Center column */}
       <div className="space-y-3 min-w-0">
         <header className="flex items-center justify-between flex-wrap gap-2">
@@ -184,6 +165,37 @@ function Page() {
             </Button>
           </div>
         </header>
+
+        {/* Patient Details Banner (always visible, not a sidebar) */}
+        <Card className="p-4 border-accent/20 bg-accent-soft/20">
+          <div className="flex flex-wrap gap-6 items-center justify-between">
+            <div className="space-y-1">
+              <div className="text-xs uppercase font-mono tracking-wider text-muted-foreground">Patient Profile</div>
+              <div className="text-lg font-bold text-foreground flex items-center gap-2">
+                {patient.fullName}
+                <span className="text-xs font-mono font-normal text-muted-foreground bg-muted px-2 py-0.5 rounded">{patient.mrn}</span>
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {patient.age}y · {patient.gender} · Blood Group: {patient.bloodGroup} · BP: {patient.bp} · Sugar: {patient.bloodSugar}
+              </div>
+            </div>
+            
+            <div className="flex gap-4 flex-wrap text-xs">
+              <div className="bg-background/80 border p-2 rounded min-w-[150px]">
+                <div className="text-[10px] uppercase font-mono text-muted-foreground">Allergies</div>
+                <div className="font-medium text-destructive">{patient.allergies.join(", ")}</div>
+              </div>
+              <div className="bg-background/80 border p-2 rounded min-w-[150px]">
+                <div className="text-[10px] uppercase font-mono text-muted-foreground">Chronic Conditions</div>
+                <div className="font-medium text-foreground">{patient.chronic.join(", ")}</div>
+              </div>
+              <div className="bg-background/80 border p-2 rounded min-w-[150px]">
+                <div className="text-[10px] uppercase font-mono text-muted-foreground">Current Medications</div>
+                <div className="font-medium text-foreground">{patient.currentMeds.join(", ")}</div>
+              </div>
+            </div>
+          </div>
+        </Card>
 
         {/* Pre-consultation (editable) */}
         <Card>

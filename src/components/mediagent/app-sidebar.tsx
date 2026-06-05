@@ -26,7 +26,6 @@ const patientItems: Item[] = [
 const doctorItems: Item[] = [
   { title: "Dashboard", url: "/doctor/dashboard", icon: LayoutDashboard },
   { title: "Severity Queue", url: "/doctor/queue", icon: ListChecks },
-  { title: "Consultation", url: "/doctor/consultations/C-2027", icon: Stethoscope },
   { title: "Patients", url: "/doctor/patients", icon: Users },
   { title: "Pending Reviews", url: "/doctor/reviews", icon: ScrollText },
   { title: "Appointments", url: "/doctor/appointments", icon: Calendar },
