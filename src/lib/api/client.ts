@@ -1,0 +1,123 @@
+// API Client wrapper for connecting the React frontend with the FastAPI backend orchestrator.
+// Backend lives at mediagent/backend/ — start it with `npm run dev:backend` or `npm start` (runs both).
+
+export const API_BASE_URL =
+  (import.meta as any).env?.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
+
+
+export type PatientIntakeRequest = {
+  patient_id?: string;
+  name: string;
+  age: number;
+  gender: string;
+  allergies: string[];
+  medical_history: string;
+  symptom_text: string;
+  language: string;
+  mode?: string;
+};
+
+export type ApproveConsultationRequest = {
+  patient_id: string;
+  patient_intake_output: any;
+  consultation_output: any;
+  doctor_edits?: any;
+};
+
+export async function postIntake(data: PatientIntakeRequest) {
+  const response = await fetch(`${API_BASE_URL}/api/intake`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(data),
+  });
+  if (!response.ok) {
+    let errorMsg = `Intake failed: ${response.statusText}`;
+    try {
+      const errJson = await response.json();
+      if (errJson && errJson.detail) {
+        errorMsg = errJson.detail;
+      }
+    } catch (e) {}
+    throw new Error(errorMsg);
+  }
+  return response.json();
+}
+
+export async function postIntakeAudio(formData: FormData) {
+  const response = await fetch(`${API_BASE_URL}/api/intake-audio`, {
+    method: "POST",
+    body: formData, // Browser sets Content-Type automatically for FormData
+  });
+  if (!response.ok) {
+    let errorMsg = `Intake Audio failed: ${response.statusText}`;
+    try {
+      const errJson = await response.json();
+      if (errJson && errJson.detail) {
+        errorMsg = errJson.detail;
+      }
+    } catch (e) {}
+    throw new Error(errorMsg);
+  }
+  return response.json();
+}
+
+export async function startConsultation(patientId: string) {
+  const response = await fetch(`${API_BASE_URL}/api/consult/start`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ patient_id: patientId }),
+  });
+  if (!response.ok) {
+    throw new Error(`Start consultation failed: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export async function transcribeConsultation(formData: FormData) {
+  const response = await fetch(`${API_BASE_URL}/api/consult/transcribe-extract`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!response.ok) {
+    throw new Error(`Transcription failed: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export async function approveConsultation(data: ApproveConsultationRequest) {
+  const response = await fetch(`${API_BASE_URL}/api/consult/approve`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(data),
+  });
+  if (!response.ok) {
+    throw new Error(`Approval failed: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export async function getPatients() {
+  const response = await fetch(`${API_BASE_URL}/api/patients`, {
+    method: "GET",
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to list patients: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export async function getPatientTimeline(patientId: string) {
+  const response = await fetch(`${API_BASE_URL}/api/patients/${patientId}/timeline`, {
+    method: "GET",
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch timeline: ${response.statusText}`);
+  }
+  return response.json();
+}

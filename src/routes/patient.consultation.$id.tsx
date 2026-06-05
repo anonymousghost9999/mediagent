@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getConsultationById } from "@/lib/mediagent/live";
 import { Button } from "@/components/ui/button";
 import { Send, Mic, MicOff, Sparkles, Check, Loader2, ArrowRight, ShieldCheck } from "lucide-react";
-import { postIntake, postIntakeAudio } from "@/lib/api/client";
+import { postIntake, postIntakeAudio, getPatientTimeline } from "@/lib/api/client";
 import { patient as patientData } from "@/lib/mediagent/data";
 import { toast } from "sonner";
 
@@ -18,9 +18,15 @@ export const Route = createFileRoute("/patient/consultation/$id")({
 
 type Msg = { from: "agent" | "patient"; text: string };
 
-const script: Msg[] = [
-  { from: "agent", text: "Hi, I'm MediAgent. Please describe what symptoms you are experiencing today." },
-];
+const getInitialGreeting = (lang: string) => {
+  if (lang === "te") {
+    return "నమస్తే, నేను మీడియాజెంట్. మీకు ఈరోజు ఎలాంటి లక్షణాలు ఉన్నాయో దయచేసి వివరించండి.";
+  }
+  if (lang === "hi") {
+    return "नमस्ते, मैं मीडियाजेंट हूँ। कृपया बताएं कि आज आपको क्या लक्षण महसूस हो रहे हैं।";
+  }
+  return "Hi, I'm MediAgent. Please describe what symptoms you are experiencing today.";
+};
 
 type Step = { id: string; label: string; state: "pending" | "running" | "done" };
 
@@ -39,7 +45,7 @@ function Page() {
     queryKey: ["patient-consultation", id],
     queryFn: async () => getConsultationById(id),
   });
-  const [msgs, setMsgs] = useState<Msg[]>(script);
+  const [msgs, setMsgs] = useState<Msg[]>([]);
   const [draft, setDraft] = useState("");
   const [steps, setSteps] = useState<Step[]>(initialSteps);
   const [typing, setTyping] = useState(false);
@@ -62,8 +68,69 @@ function Page() {
   }, [id]);
 
   useEffect(() => {
+    if (!resolvedId || resolvedId === "C-NEW") return;
+
+    const loadHistory = async () => {
+      try {
+        const timelineEvents = await getPatientTimeline(resolvedId);
+        const chatMsgs = timelineEvents
+          .filter((e: any) => e.event_type === "intake_chat_message")
+          .map((e: any) => ({
+            from: e.details.role === "patient" ? "patient" : "agent",
+            text: e.details.text
+          }));
+
+        if (chatMsgs.length > 0) {
+          setMsgs(chatMsgs);
+
+          // Restore steps state if a report exists in localStorage
+          const savedReport = localStorage.getItem(`mediagent_report_${resolvedId}`);
+          if (savedReport) {
+            const res = JSON.parse(savedReport);
+            updateStepsFromReport(res);
+          }
+        } else {
+          setMsgs([
+            { from: "agent", text: getInitialGreeting(search.lang) }
+          ]);
+        }
+      } catch (err) {
+        console.error("Failed to load patient timeline:", err);
+        setMsgs([
+          { from: "agent", text: getInitialGreeting(search.lang) }
+        ]);
+      }
+    };
+
+    loadHistory();
+  }, [resolvedId, search.lang]);
+
+  useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [msgs, typing]);
+
+  const updateStepsFromReport = (res: any) => {
+    setSteps((prev) => {
+      return prev.map((s) => {
+        if (s.id === "s1") {
+          const hasSymptoms = res.primary_issue && res.primary_issue.toLowerCase() !== "unknown" && res.primary_issue.toLowerCase() !== "not sure";
+          return { ...s, state: hasSymptoms ? "done" : "running" };
+        }
+        if (s.id === "s2") {
+          const hasHistory = res.allergies && res.chronic_diseases;
+          return { ...s, state: hasHistory ? "done" : "running" };
+        }
+        if (s.id === "s3") {
+          const hasSeverity = typeof res.severity_score === "number" && res.severity_score > 0;
+          return { ...s, state: hasSeverity ? "done" : "running" };
+        }
+        if (s.id === "s4") {
+          return { ...s, state: res.is_intake_complete ? "done" : "pending" };
+        }
+        return s;
+      });
+    });
+  };
 
   const send = async () => {
     if (!draft.trim() || loading) return;
@@ -86,15 +153,11 @@ function Page() {
         medical_history: `${patientData.chronic.join(", ")}. ${patientData.currentMeds.join(", ")}`,
         symptom_text: userText,
         language: search.lang === "te" ? "telugu" : search.lang === "hi" ? "hindi" : "english",
+        mode: search.mode,
       });
 
-      // Complete all steps
-      setSteps([
-        { id: "s1", label: "Symptoms captured", state: "done" },
-        { id: "s2", label: "Medical history recorded", state: "done" },
-        { id: "s3", label: "Severity assessment", state: "done" },
-        { id: "s4", label: "Pre-consultation report", state: "done" },
-      ]);
+      // Dynamically update steps based on report completeness
+      updateStepsFromReport(res);
 
       // Save report details to localStorage
       localStorage.setItem(`mediagent_report_${resolvedId}`, JSON.stringify(res));
@@ -102,8 +165,8 @@ function Page() {
 
       setMsgs((m) => [...m, { from: "agent", text: res.agent_response_translated }]);
 
-      // Audio Speech playback
-      if (res.agent_response_audio) {
+      // Audio Speech playback (only in voice mode)
+      if (search.mode === "voice" && res.agent_response_audio) {
         try {
           const audioUrl = `data:audio/wav;base64,${res.agent_response_audio}`;
           const audio = new Audio(audioUrl);
@@ -112,11 +175,15 @@ function Page() {
           console.error("Audio playback failed:", audioErr);
         }
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      toast.error("Failed to connect to backend. Falling back to mock.");
-      setSteps(initialSteps.map((s) => ({ ...s, state: "done" })));
-      setMsgs((m) => [...m, { from: "agent", text: "Report generated successfully based on symptoms." }]);
+      toast.error(err.message || "Failed to connect to backend.");
+      // Rollback the intake steps since it failed
+      setSteps((prev) => prev.map((s, i) => i === 0 ? { ...s, state: "pending" } : s));
+      // Put the text back in the input box so the user doesn't lose it
+      setDraft(userText);
+      // Remove the failed user message bubble
+      setMsgs((m) => m.slice(0, -1));
     } finally {
       setTyping(false);
       setLoading(false);
@@ -178,12 +245,8 @@ function Page() {
 
       const res = await postIntakeAudio(formData);
 
-      setSteps([
-        { id: "s1", label: "Symptoms captured", state: "done" },
-        { id: "s2", label: "Medical history recorded", state: "done" },
-        { id: "s3", label: "Severity assessment", state: "done" },
-        { id: "s4", label: "Pre-consultation report", state: "done" },
-      ]);
+      // Dynamically update steps based on report completeness
+      updateStepsFromReport(res);
 
       // Save report details to localStorage
       localStorage.setItem(`mediagent_report_${resolvedId}`, JSON.stringify(res));
@@ -198,7 +261,7 @@ function Page() {
         return [...updated, { from: "agent", text: res.agent_response_translated }];
       });
 
-      if (res.agent_response_audio) {
+      if (search.mode === "voice" && res.agent_response_audio) {
         try {
           const audioUrl = `data:audio/wav;base64,${res.agent_response_audio}`;
           const audio = new Audio(audioUrl);
@@ -207,11 +270,13 @@ function Page() {
           console.error("Audio playback failed:", audioErr);
         }
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      toast.error("Failed to evaluate audio intake. Falling back to mock.");
-      setSteps(initialSteps.map((s) => ({ ...s, state: "done" })));
-      setMsgs((m) => [...m, { from: "agent", text: "Prepared report based on audio intake." }]);
+      toast.error(err.message || "Failed to evaluate audio intake.");
+      // Rollback the intake steps since it failed
+      setSteps((prev) => prev.map((s, i) => i === 0 ? { ...s, state: "pending" } : s));
+      // Remove the failed user audio message bubble
+      setMsgs((m) => m.slice(0, -1));
     } finally {
       setTyping(false);
       setLoading(false);
@@ -253,25 +318,27 @@ function Page() {
             <div className="soft-card flex items-end gap-2 p-2">
               <textarea
                 value={draft}
-                disabled={loading || recording}
+                disabled={loading || recording || allDone}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
                 }}
                 rows={1}
-                placeholder={recording ? "Recording audio..." : "Describe what's going on…"}
+                placeholder={allDone ? "Intake complete. Please click on the report to proceed." : recording ? "Recording audio..." : "Describe what's going on…"}
                 className="flex-1 resize-none bg-transparent px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none"
               />
-              <Button 
-                size="icon" 
-                variant={recording ? "destructive" : "ghost"} 
-                className="rounded-full"
-                onClick={recording ? stopRecording : startRecording}
-                disabled={loading}
-              >
-                {recording ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-              </Button>
-              <Button size="icon" onClick={send} className="rounded-full" disabled={!draft.trim() || loading || recording}>
+              {search.mode === "voice" && (
+                <Button 
+                  size="icon" 
+                  variant={recording ? "destructive" : "ghost"} 
+                  className="rounded-full"
+                  onClick={recording ? stopRecording : startRecording}
+                  disabled={loading || allDone}
+                >
+                  {recording ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                </Button>
+              )}
+              <Button size="icon" onClick={send} className="rounded-full" disabled={!draft.trim() || loading || recording || allDone}>
                 {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
               </Button>
             </div>
@@ -315,6 +382,7 @@ function Page() {
             <Link
               to="/patient/consultation/$id/report"
               params={{ id: resolvedId }}
+              search={{ lang: search.lang, mode: search.mode }}
               className="soft-card ai-glow block p-5 hover:-translate-y-0.5 transition"
             >
               <div className="text-xs uppercase tracking-wider text-accent font-medium">Ready</div>
@@ -328,7 +396,7 @@ function Page() {
           <button
             onClick={() => {
               setSteps(initialSteps.map((s) => ({ ...s, state: "done" })));
-              setTimeout(() => nav({ to: "/patient/consultation/$id/report", params: { id: resolvedId } }), 200);
+              setTimeout(() => nav({ to: "/patient/consultation/$id/report", params: { id: resolvedId }, search: { lang: search.lang, mode: search.mode } }), 200);
             }}
             className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
           >

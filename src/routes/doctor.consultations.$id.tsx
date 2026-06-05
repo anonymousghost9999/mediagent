@@ -39,13 +39,14 @@ function Page() {
     fullName: data.profile.full_name ?? patient.fullName,
     mrn: data.profile.mrn ?? patient.mrn,
     age: data.profile.dob ? Math.max(0, new Date().getFullYear() - new Date(data.profile.dob).getFullYear()) : patient.age,
-    gender: data.profile.gender ?? data.details?.gender ?? patient.gender,
-    bloodGroup: data.profile.blood_group ?? data.details?.blood_group ?? patient.bloodGroup,
+    // Cast details to any — Supabase union type doesn't expose patient_details-specific columns directly
+    gender: (data.details as any)?.gender ?? (data.profile as any)?.gender ?? patient.gender,
+    bloodGroup: (data.profile as any)?.blood_group ?? (data.details as any)?.blood_group ?? patient.bloodGroup,
     bp: patient.bp,
     bloodSugar: patient.bloodSugar,
-    allergies: (data.details?.known_allergies as string[] | undefined) ?? patient.allergies,
-    chronic: (data.details?.chronic_conditions as string[] | undefined) ?? patient.chronic,
-    currentMeds: (data.profile.current_meds as string[] | undefined) ?? patient.currentMeds,
+    allergies: ((data.details as any)?.known_allergies as string[] | undefined) ?? patient.allergies,
+    chronic: ((data.details as any)?.chronic_conditions as string[] | undefined) ?? patient.chronic,
+    currentMeds: ((data.profile as any)?.current_meds as string[] | undefined) ?? patient.currentMeds,
   } : patient;
 
   // AI review state

@@ -61,7 +61,7 @@ function Page() {
       <div className="mx-auto max-w-3xl px-6 py-10 space-y-8">
         {/* Top bar */}
         <div className="flex items-center justify-between">
-          <Link to="/patient/consultation/$id" params={{ id }} className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+          <Link to="/patient/consultation/$id" params={{ id }} search={{ lang: "en", mode: "chat" }} className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
             <ChevronLeft className="h-4 w-4" /> Back to consultation
           </Link>
           <Button variant="outline" size="sm" onClick={() => window.print()}>
@@ -81,7 +81,7 @@ function Page() {
               {profile?.full_name ?? patient.fullName}
             </h1>
             <div className="text-sm text-muted-foreground font-mono">
-              {profile?.mrn ?? patient.mrn} · {profile?.dob ? `${new Date().getFullYear() - new Date(profile.dob).getFullYear()}y` : `${patient.age}y`} {details?.gender ?? profile?.gender ?? patient.gender} · Generated {new Date().toLocaleString()}
+              {profile?.mrn ?? patient.mrn} · {profile?.dob ? `${new Date().getFullYear() - new Date(profile.dob).getFullYear()}y` : `${patient.age}y`} {(details as any)?.gender ?? (profile as any)?.gender ?? patient.gender} · Generated {new Date().toLocaleString()}
             </div>
             <div className="inline-flex items-center gap-1.5 chip bg-warning/15 text-warning border border-warning/30 mt-1">
               <ShieldCheck className="h-3 w-3" /> Awaiting doctor review · not part of medical record yet
@@ -91,10 +91,10 @@ function Page() {
           {/* Patient summary */}
           <Section title="Patient summary" icon={ClipboardList}>
             <dl className="grid grid-cols-2 gap-x-8 gap-y-3 text-sm">
-              <Item label="Allergies" value={(details?.known_allergies as string[] | undefined)?.join(", ") ?? patient.allergies.join(", ")} />
-              <Item label="Chronic conditions" value={(details?.chronic_conditions as string[] | undefined)?.join(", ") ?? patient.chronic.join(", ")} />
-              <Item label="Current medications" value={(profile?.current_meds as string[] | undefined)?.join(", ") ?? patient.currentMeds.join(", ")} />
-              <Item label="Blood group" value={details?.blood_group ?? profile?.blood_group ?? patient.bloodGroup} />
+              <Item label="Allergies" value={((details as any)?.known_allergies as string[] | undefined)?.join(", ") ?? patient.allergies.join(", ")} />
+              <Item label="Chronic conditions" value={((details as any)?.chronic_conditions as string[] | undefined)?.join(", ") ?? patient.chronic.join(", ")} />
+              <Item label="Current medications" value={((profile as any)?.current_meds as string[] | undefined)?.join(", ") ?? patient.currentMeds.join(", ")} />
+              <Item label="Blood group" value={(details as any)?.blood_group ?? (profile as any)?.blood_group ?? patient.bloodGroup} />
             </dl>
           </Section>
 
