@@ -221,7 +221,7 @@ export async function getDoctorQueue() {
 
   const { data, error } = await supabase
     .from("consultations")
-    .select("id,patient_id,status,severity_score,created_at,assigned_doctor_id")
+    .select("id,patient_id,status,severity_score,created_at,assigned_doctor_id,record_name,chief_complaint")
     .order("severity_score", { ascending: false })
     .order("created_at", { ascending: false })
     .limit(50);
@@ -236,12 +236,13 @@ export async function getDoctorQueue() {
     id: row.id,
     patient: nameById.get(row.patient_id) ?? row.patient_id?.slice(0, 8) ?? "Unknown",
     severity: Number(row.severity_score ?? 1),
-    complaint: row.status ? `${row.status.replaceAll("_", " ").toLowerCase()} · consultation` : "Live consultation",
+    complaint: (row.chief_complaint as string | null) || (row.status ? `${row.status.replaceAll("_", " ").toLowerCase()} · consultation` : "Live consultation"),
     waited: row.created_at ? `${Math.max(1, Math.round((Date.now() - new Date(row.created_at).getTime()) / 60000))}m` : "—",
     created_at: row.created_at,
     patient_id: row.patient_id,
     assigned_doctor_id: row.assigned_doctor_id,
     status: row.status,
+    record_name: (row.record_name as string | null) || row.id,
   }));
 }
 

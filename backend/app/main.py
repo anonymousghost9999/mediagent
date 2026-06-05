@@ -51,6 +51,10 @@ class FinalizeConsultationRequest(BaseModel):
     consultation_output: Dict[str, Any]
     doctor_edits: Optional[Dict[str, Any]] = None
 
+class SessionSummaryRequest(BaseModel):
+    transcript: str
+    clinical_facts: Optional[Dict[str, Any]] = None
+
 @app.get("/")
 def read_root():
     return {"message": "Welcome to MediAgent Backend Agent Pipeline!"}
@@ -201,3 +205,19 @@ def approve_consultation(req: FinalizeConsultationRequest):
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/consult/session-summary")
+def get_session_summary(req: SessionSummaryRequest):
+    """
+    Generates an AI-powered structured session summary from the consultation transcript.
+    Returns: overview, key_findings, action_items, patient_instructions, risk_flags.
+    """
+    try:
+        import app.services.llm_service as llm
+        facts = req.clinical_facts or {}
+        summary = llm.generate_session_summary(req.transcript, facts)
+        return summary
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
