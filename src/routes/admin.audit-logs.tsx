@@ -1,17 +1,21 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
+import { getAuditLogs } from "@/lib/mediagent/live";
 import { Card } from "@/components/ui/card";
-import { auditStore, useStore } from "@/lib/mediagent/store";
 
 export const Route = createFileRoute("/admin/audit-logs")({ component: Page });
 
 function Page() {
-  const entries = useStore(auditStore);
+  const { data: entries } = useQuery({
+    queryKey: ["admin-audit-logs"],
+    queryFn: async () => getAuditLogs(),
+  });
   return (
     <div className="p-6 max-w-6xl space-y-4">
       <header>
         <div className="text-xs font-mono uppercase tracking-widest text-muted-foreground">Admin · Audit</div>
         <h1 className="text-2xl font-semibold">Audit logs (immutable)</h1>
-        <p className="text-sm text-muted-foreground">{entries.length} events · append-only, written on every clinical and profile change.</p>
+        <p className="text-sm text-muted-foreground">{entries?.length ?? 0} events · append-only, written on every clinical and profile change.</p>
       </header>
       <Card className="overflow-hidden">
         <table className="w-full text-sm">
@@ -26,14 +30,14 @@ function Page() {
             </tr>
           </thead>
           <tbody>
-            {entries.map((a) => (
+            {(entries ?? []).map((a) => (
               <tr key={a.id} className="border-t align-top">
                 <td className="p-3 font-mono text-xs text-muted-foreground">{a.id}</td>
-                <td className="p-3 font-mono text-xs">{a.at}</td>
-                <td className="p-3">{a.actor}</td>
-                <td className="p-3 font-mono text-xs">{a.action}</td>
-                <td className="p-3 font-mono text-xs text-muted-foreground">{a.entity}</td>
-                <td className="p-3 text-xs text-muted-foreground">{a.note ?? (a.before || a.after ? "value changed" : "")}</td>
+                <td className="p-3 font-mono text-xs">{a.created_at?.slice(11, 19)}</td>
+                <td className="p-3">{a.table_name}</td>
+                <td className="p-3 font-mono text-xs">{a.action_type}</td>
+                <td className="p-3 font-mono text-xs text-muted-foreground">{a.record_id}</td>
+                <td className="p-3 text-xs text-muted-foreground">{a.previous_state || a.new_state ? "value changed" : ""}</td>
               </tr>
             ))}
           </tbody>

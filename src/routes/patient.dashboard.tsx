@@ -1,4 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
+import { useAuth } from "@/hooks/use-auth";
+import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { patient, ongoing, timeline } from "@/lib/mediagent/data";
 import {
@@ -16,8 +19,84 @@ function greeting() {
 }
 
 function Page() {
-  const first = patient.fullName.split(" ")[0];
-  const active = ongoing[0];
+  const { user } = useAuth();
+
+  const { data: profile } = useQuery({
+    queryKey: ["patient-dashboard-profile", user?.id],
+    enabled: !!user,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("id, full_name, email, mrn, mobile, blood_group, height_cm, weight_kg")
+        .eq("id", user!.id)
+        .maybeSingle();
+      if (error) throw error;
+      return data;
+    },
+  });
+
+  const { data: patientDetails } = useQuery({
+    queryKey: ["patient-dashboard-details", user?.id],
+    enabled: !!user,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("patient_details")
+        .select("date_of_birth, gender, blood_group, chronic_conditions, known_allergies")
+        .eq("id", user!.id)
+        .maybeSingle();
+      if (error) throw error;
+      return data;
+    },
+  });
+
+  const { data: consultations } = useQuery({
+    queryKey: ["patient-dashboard-consultations", user?.id],
+    enabled: !!user,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("consultations")
+        .select("id,status,severity_score,created_at,assigned_doctor_id,hospital_id")
+        .eq("patient_id", user!.id)
+        .order("created_at", { ascending: false })
+        .limit(5);
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
+
+  const { data: latestEhr } = useQuery({
+    queryKey: ["patient-dashboard-ehr", consultations?.[0]?.id],
+    enabled: !!consultations?.[0]?.id,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("ehr_records")
+        .select("diagnosis, approved_at, discharge_summary_url, created_at")
+        .eq("consultation_id", consultations![0].id)
+        .maybeSingle();
+      if (error) throw error;
+      return data;
+    },
+  });
+
+  const first = profile?.full_name?.split(" ")[0] ?? patient.fullName.split(" ")[0];
+  const activeConsultation = consultations?.[0];
+  const active = activeConsultation
+    ? {
+        diagnosis: latestEhr?.diagnosis ?? `Consultation ${activeConsultation.id}`,
+        doctor: activeConsultation.assigned_doctor_id ? `Doctor ${activeConsultation.assigned_doctor_id.slice(0, 8)}` : "Assigned doctor pending",
+        progress: latestEhr?.diagnosis ? `Live record loaded from Supabase for ${profile?.full_name ?? patient.fullName}.` : "Live consultation record loaded from Supabase.",
+        nextAppt: activeConsultation.created_at ? new Date(activeConsultation.created_at).toLocaleDateString() : "—",
+      }
+    : ongoing[0];
+
+  const liveTimeline = consultations?.map((consultation) => ({
+    date: consultation.created_at?.slice(0, 10) ?? "—",
+    type: consultation.status ?? "Consultation",
+    title: consultation.id,
+    doctor: consultation.assigned_doctor_id ? consultation.assigned_doctor_id.slice(0, 8) : "—",
+  })) ?? timeline;
+
+  const activeCount = consultations?.length ?? ongoing.length;
 
   return (
     <div className="min-h-full bg-background">
@@ -50,7 +129,7 @@ function Page() {
               <p className="text-sm text-foreground/80 pt-2">{active.progress}</p>
             </div>
             <Stat label="Severity" value="Medium" tone="warning" />
-            <Stat label="Next review" value={active.nextAppt.split(" · ")[0]} sub={active.nextAppt.split(" · ")[1]} />
+            <Stat label="Next review" value={active.nextAppt} sub={activeConsultation ? activeConsultation.status : "Demo fallback"} />
           </div>
         </section>
 
@@ -87,14 +166,14 @@ function Page() {
             to="/patient/timeline"
             icon={ClipboardList}
             label="Medical Timeline"
-            value={`${timeline.length} events`}
+            value={`${liveTimeline.length} events`}
             sub="Visits, labs, prescriptions"
           />
           <BigCard
             to="/patient/treatments/ongoing"
             icon={Activity}
             label="Treatments"
-            value={`${ongoing.length} active`}
+            value={`${activeCount} active`}
             sub="Track progress & follow-ups"
           />
           <BigCard

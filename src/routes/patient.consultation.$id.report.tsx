@@ -1,4 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
+import { getConsultationById } from "@/lib/mediagent/live";
 import { Button } from "@/components/ui/button";
 import { patient } from "@/lib/mediagent/data";
 import {
@@ -22,6 +24,12 @@ const timelinePoints = [
 
 function Page() {
   const { id } = Route.useParams();
+  const { data } = useQuery({
+    queryKey: ["patient-consultation-report", id],
+    queryFn: async () => getConsultationById(id),
+  });
+  const profile = data?.profile;
+  const details = data?.details;
   return (
     <div className="min-h-full bg-background">
       <div className="mx-auto max-w-3xl px-6 py-10 space-y-8">
@@ -44,10 +52,10 @@ function Page() {
               Pre-consultation report
             </div>
             <h1 className="text-3xl font-semibold tracking-tight">
-              {patient.fullName}
+              {profile?.full_name ?? patient.fullName}
             </h1>
             <div className="text-sm text-muted-foreground font-mono">
-              {patient.mrn} · {patient.age}y {patient.gender} · Generated {new Date().toLocaleString()}
+              {profile?.mrn ?? patient.mrn} · {profile?.dob ? `${new Date().getFullYear() - new Date(profile.dob).getFullYear()}y` : `${patient.age}y`} {details?.gender ?? profile?.gender ?? patient.gender} · Generated {new Date().toLocaleString()}
             </div>
             <div className="inline-flex items-center gap-1.5 chip bg-warning/15 text-warning border border-warning/30 mt-1">
               <ShieldCheck className="h-3 w-3" /> Awaiting doctor review · not part of medical record yet
@@ -57,10 +65,10 @@ function Page() {
           {/* Patient summary */}
           <Section title="Patient summary" icon={ClipboardList}>
             <dl className="grid grid-cols-2 gap-x-8 gap-y-3 text-sm">
-              <Item label="Allergies" value={patient.allergies.join(", ")} />
-              <Item label="Chronic conditions" value={patient.chronic.join(", ")} />
-              <Item label="Current medications" value={patient.currentMeds.join(", ")} />
-              <Item label="Blood group" value={patient.bloodGroup} />
+              <Item label="Allergies" value={(details?.known_allergies as string[] | undefined)?.join(", ") ?? patient.allergies.join(", ")} />
+              <Item label="Chronic conditions" value={(details?.chronic_conditions as string[] | undefined)?.join(", ") ?? patient.chronic.join(", ")} />
+              <Item label="Current medications" value={(profile?.current_meds as string[] | undefined)?.join(", ") ?? patient.currentMeds.join(", ")} />
+              <Item label="Blood group" value={details?.blood_group ?? profile?.blood_group ?? patient.bloodGroup} />
             </dl>
           </Section>
 

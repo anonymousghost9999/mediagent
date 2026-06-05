@@ -1,4 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
+import { useAuth } from "@/hooks/use-auth";
+import { supabase } from "@/integrations/supabase/client";
 import { doctorQueue, safetyAlerts } from "@/lib/mediagent/data";
 import { SeverityChip } from "@/components/mediagent/badges";
 import {
@@ -9,8 +12,74 @@ import {
 export const Route = createFileRoute("/doctor/dashboard")({ component: Page });
 
 function Page() {
-  const sorted = [...doctorQueue].sort((a, b) => b.severity - a.severity);
-  const current = sorted[0];
+  const { user } = useAuth();
+
+  const { data: profile } = useQuery({
+    queryKey: ["doctor-dashboard-profile", user?.id],
+    enabled: !!user,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("id, full_name, role")
+        .eq("id", user!.id)
+        .maybeSingle();
+      if (error) throw error;
+      return data;
+    },
+  });
+
+  const { data: queueRows } = useQuery({
+    queryKey: ["doctor-dashboard-queue"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("consultations")
+        .select("id,status,severity_score,created_at,patient_id,assigned_doctor_id")
+        .order("severity_score", { ascending: false })
+        .order("created_at", { ascending: false })
+        .limit(5);
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
+
+  const patientIds = (queueRows ?? []).map((row) => row.patient_id).filter(Boolean);
+
+  const { data: patientNames } = useQuery({
+    queryKey: ["doctor-dashboard-patients", patientIds.join(",")],
+    enabled: patientIds.length > 0,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("id, full_name")
+        .in("id", patientIds);
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
+
+  const { data: pendingReviews } = useQuery({
+    queryKey: ["doctor-dashboard-pending-reviews"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("ehr_records")
+        .select("id, consultation_id, diagnosis, is_draft, created_at")
+        .eq("is_draft", true)
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
+
+  const nameById = new Map((patientNames ?? []).map((row) => [row.id, row.full_name]));
+  const sorted = (queueRows ?? doctorQueue).map((row) => ({
+    id: row.id,
+    patient: nameById.get(row.patient_id) ?? doctorQueue.find((q) => q.id === row.id)?.patient ?? "Unknown patient",
+    severity: Number(row.severity_score ?? 1) as 1 | 2 | 3 | 4 | 5,
+    complaint: row.status ? `${row.status.replaceAll("_", " ").toLowerCase()} · consultation` : "Live consultation",
+    waited: row.created_at ? `${Math.max(1, Math.round((Date.now() - new Date(row.created_at).getTime()) / 60000))}m` : "—",
+  })).sort((a, b) => b.severity - a.severity);
+  const current = sorted[0] ?? doctorQueue[0];
+  const doctorName = profile?.full_name ? `Dr. ${profile.full_name.replace(/^Dr\.\s*/i, "")}` : "Dr. Mehta";
 
   return (
     <div className="min-h-full bg-background">
@@ -19,7 +88,7 @@ function Page() {
         <header className="flex items-end justify-between flex-wrap gap-3">
           <div>
             <div className="text-xs uppercase tracking-widest text-muted-foreground">Doctor</div>
-            <h1 className="text-3xl font-semibold tracking-tight">Good morning, Dr. Mehta</h1>
+            <h1 className="text-3xl font-semibold tracking-tight">Good morning, {doctorName}</h1>
             <p className="text-sm text-muted-foreground mt-1">
               {sorted.length} patients in queue · AI has pre-screened each one.
             </p>
@@ -34,7 +103,7 @@ function Page() {
         <div className="grid gap-3 grid-cols-2 md:grid-cols-4">
           <StatTile icon={Activity} label="In queue" value={sorted.length} />
           <StatTile icon={Clock} label="Avg wait" value="14m" />
-          <StatTile icon={ScrollText} label="Pending reviews" value={7} />
+          <StatTile icon={ScrollText} label="Pending reviews" value={pendingReviews?.length ?? 0} />
           <StatTile icon={CheckCircle2} label="Completed today" value={11} tone="success" />
         </div>
 

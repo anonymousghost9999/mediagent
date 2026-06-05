@@ -1,5 +1,8 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
+import { useMutation } from "@tanstack/react-query";
+import { useAuth } from "@/hooks/use-auth";
+import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { MessageSquare, Mic } from "lucide-react";
@@ -15,8 +18,22 @@ const langs = [
 
 function Page() {
   const nav = useNavigate();
+  const { user } = useAuth();
   const [lang, setLang] = useState("en");
   const [mode, setMode] = useState<"chat" | "voice">("chat");
+  const startConsultation = useMutation({
+    mutationFn: async () => {
+      if (!user) throw new Error("No signed-in user");
+      const { data, error } = await supabase
+        .from("consultations")
+        .insert({ patient_id: user.id, status: "drafting", severity_score: 3 })
+        .select("id")
+        .single();
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: (row) => nav({ to: "/patient/consultation/$id", params: { id: row.id }, search: { lang, mode } }),
+  });
 
   return (
     <div className="p-6 max-w-3xl space-y-6">
@@ -57,7 +74,7 @@ function Page() {
         </CardContent>
       </Card>
 
-      <Button size="lg" className="w-full" onClick={() => nav({ to: "/patient/consultation/$id", params: { id: "C-NEW" }, search: { lang, mode } })}>
+      <Button size="lg" className="w-full" onClick={() => startConsultation.mutate()} disabled={startConsultation.isPending}>
         Start with Patient Agent
       </Button>
     </div>

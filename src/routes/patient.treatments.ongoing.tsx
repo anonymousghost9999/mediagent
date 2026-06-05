@@ -1,6 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
+import { useAuth } from "@/hooks/use-auth";
+import { getPatientTreatments } from "@/lib/mediagent/live";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ongoing } from "@/lib/mediagent/data";
 import { StatusPill } from "@/components/mediagent/badges";
 import { treatmentStatusLabel, type TreatmentStatus } from "@/lib/mediagent/store";
 import { CalendarClock, History } from "lucide-react";
@@ -8,19 +10,26 @@ import { CalendarClock, History } from "lucide-react";
 export const Route = createFileRoute("/patient/treatments/ongoing")({ component: Page });
 
 function Page() {
+  const { user } = useAuth();
+  const { data: treatments } = useQuery({
+    queryKey: ["patient-treatments", user?.id],
+    enabled: !!user,
+    queryFn: async () => getPatientTreatments(user!.id),
+  });
+  const rows = treatments ?? [];
   return (
     <div className="p-6 space-y-4 max-w-5xl">
       <header>
         <div className="text-xs font-mono uppercase tracking-widest text-muted-foreground">Patient · Ongoing treatments</div>
         <h1 className="text-2xl font-semibold">Active care plans</h1>
       </header>
-      {ongoing.map((t, i) => (
+      {(rows.length ? rows : []).map((t, i) => (
         <Card key={i}>
           <CardHeader>
             <div className="flex items-center justify-between flex-wrap gap-2">
               <CardTitle>{t.diagnosis}</CardTitle>
               <div className="flex items-center gap-2">
-                <StatusPill status={t.status} />
+                <StatusPill status={t.status as any} />
                 <span className="chip bg-accent-soft border border-accent/50">
                   {treatmentStatusLabel[t.treatmentStatus]}
                 </span>
@@ -29,7 +38,7 @@ function Page() {
           </CardHeader>
           <CardContent className="space-y-2 text-sm">
             <div><span className="text-muted-foreground">Assigned doctor: </span>{t.doctor}</div>
-            <div><span className="text-muted-foreground">Medications: </span>{t.meds.join(" · ")}</div>
+            <div><span className="text-muted-foreground">Medications: </span>{t.meds.join(" · ") || "—"}</div>
             <div><span className="text-muted-foreground">Progress: </span>{t.progress}</div>
             <div><span className="text-muted-foreground">Next appointment: </span>{t.nextAppt}</div>
             <div className="mt-2 p-3 rounded-md bg-accent-soft border border-accent/30 flex items-start gap-2">

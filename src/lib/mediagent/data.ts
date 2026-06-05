@@ -31,12 +31,12 @@ export type ConsultationState =
 export const patient = {
   id: "PT-100428",
   mrn: "MRN-2026-00428",
-  fullName: "Aarav Reddy",
+  fullName: "Demo Patient",
   age: 34,
   gender: "M",
   dob: "1991-03-12",
   mobile: "+91 98480 12345",
-  email: "aarav.reddy@example.com",
+  email: "demo.patient@example.com",
   address: "Plot 14, Banjara Hills, Hyderabad",
   bloodGroup: "O+",
   heightCm: 176,
@@ -117,7 +117,7 @@ export const history = [
 export const doctorQueue = [
   { id: "C-2031", patient: "Meera Sharma", severity: 5 as Severity, complaint: "Acute chest pain", waited: "4m" },
   { id: "C-2029", patient: "Rohan Das", severity: 4 as Severity, complaint: "Severe headache, vomiting", waited: "12m" },
-  { id: "C-2027", patient: "Aarav Reddy", severity: 3 as Severity, complaint: "Wheezing, 2d cough", waited: "18m" },
+  { id: "C-2027", patient: "Ananya Rao", severity: 3 as Severity, complaint: "Wheezing, 2d cough", waited: "18m" },
   { id: "C-2024", patient: "Lakshmi N.", severity: 2 as Severity, complaint: "Skin rash", waited: "26m" },
   { id: "C-2018", patient: "Vikram J.", severity: 1 as Severity, complaint: "Routine BP check", waited: "41m" },
 ];
@@ -154,6 +154,6 @@ export const safetyAlerts = [
 export const auditSample = [
   { at: "10:42:03", actor: "Dr. Mehta", action: "REPORT_APPROVED", entity: "report:R-9981" },
   { at: "10:41:12", actor: "agent:consultation", action: "AI_DRAFT_GENERATED", entity: "consultation:C-2027" },
-  { at: "10:38:55", actor: "Aarav Reddy", action: "INTAKE_COMPLETED", entity: "consultation:C-2027" },
-  { at: "10:31:09", actor: "Aarav Reddy", action: "LOGIN", entity: "user:PT-100428" },
+  { at: "10:38:55", actor: "Demo Patient", action: "INTAKE_COMPLETED", entity: "consultation:C-2027" },
+  { at: "10:31:09", actor: "Demo Patient", action: "LOGIN", entity: "user:PT-100428" },
 ];

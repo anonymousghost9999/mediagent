@@ -38,8 +38,8 @@ export type AuditEntry = {
 const seedAudit: AuditEntry[] = [
   { id: "A-0004", at: "10:42:03", actor: "Dr. Mehta", action: "REPORT_APPROVED", entity: "report:R-9981" },
   { id: "A-0003", at: "10:41:12", actor: "agent:consultation", action: "AI_DRAFT_GENERATED", entity: "consultation:C-2027" },
-  { id: "A-0002", at: "10:38:55", actor: "Aarav Reddy", action: "INTAKE_COMPLETED", entity: "consultation:C-2027" },
-  { id: "A-0001", at: "10:31:09", actor: "Aarav Reddy", action: "LOGIN", entity: "user:PT-100428" },
+  { id: "A-0002", at: "10:38:55", actor: "Demo Patient", action: "INTAKE_COMPLETED", entity: "consultation:C-2027" },
+  { id: "A-0001", at: "10:31:09", actor: "Demo Patient", action: "LOGIN", entity: "user:PT-100428" },
 ];
 
 export const auditStore = createStore<AuditEntry[]>(seedAudit);

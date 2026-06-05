@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -11,6 +12,7 @@ import { aiFields, safetyAlerts, patient, timeline } from "@/lib/mediagent/data"
 import { StatusPill, DraftBadge } from "@/components/mediagent/badges";
 import { IMReportForm, downloadReportAsPDF } from "@/components/mediagent/im-report-form";
 import { logAudit, treatmentStatuses, treatmentStatusLabel, type TreatmentStatus } from "@/lib/mediagent/store";
+import { getConsultationById } from "@/lib/mediagent/live";
 import type { IMReportData } from "@/lib/mediagent/im-report";
 import {
   AlertTriangle, Check, Pencil, X, ShieldCheck, Mic, MicOff, Save, Download, FileText,
@@ -28,6 +30,22 @@ const initialPre = {
 
 function Page() {
   const { id } = Route.useParams();
+  const { data } = useQuery({
+    queryKey: ["doctor-consultation", id],
+    queryFn: async () => getConsultationById(id),
+  });
+  const currentPatient = data?.profile ? {
+    fullName: data.profile.full_name ?? patient.fullName,
+    mrn: data.profile.mrn ?? patient.mrn,
+    age: data.profile.dob ? Math.max(0, new Date().getFullYear() - new Date(data.profile.dob).getFullYear()) : patient.age,
+    gender: data.profile.gender ?? data.details?.gender ?? patient.gender,
+    bloodGroup: data.profile.blood_group ?? data.details?.blood_group ?? patient.bloodGroup,
+    bp: patient.bp,
+    bloodSugar: patient.bloodSugar,
+    allergies: (data.details?.known_allergies as string[] | undefined) ?? patient.allergies,
+    chronic: (data.details?.chronic_conditions as string[] | undefined) ?? patient.chronic,
+    currentMeds: (data.profile.current_meds as string[] | undefined) ?? patient.currentMeds,
+  } : patient;
 
   // AI review state
   const [fields, setFields] = useState(aiFields);
@@ -129,8 +147,8 @@ function Page() {
     });
     downloadReportAsPDF({
       title: `Consultation Report · ${id}`,
-      patientName: patient.fullName,
-      patientMrn: patient.mrn,
+    patientName: currentPatient.fullName,
+    patientMrn: currentPatient.mrn,
       doctor: "Dr. R. Mehta",
       data: report,
       extras: {
@@ -172,26 +190,26 @@ function Page() {
             <div className="space-y-1">
               <div className="text-xs uppercase font-mono tracking-wider text-muted-foreground">Patient Profile</div>
               <div className="text-lg font-bold text-foreground flex items-center gap-2">
-                {patient.fullName}
-                <span className="text-xs font-mono font-normal text-muted-foreground bg-muted px-2 py-0.5 rounded">{patient.mrn}</span>
+                {currentPatient.fullName}
+                <span className="text-xs font-mono font-normal text-muted-foreground bg-muted px-2 py-0.5 rounded">{currentPatient.mrn}</span>
               </div>
               <div className="text-xs text-muted-foreground">
-                {patient.age}y · {patient.gender} · Blood Group: {patient.bloodGroup} · BP: {patient.bp} · Sugar: {patient.bloodSugar}
+                {currentPatient.age}y · {currentPatient.gender} · Blood Group: {currentPatient.bloodGroup} · BP: {currentPatient.bp} · Sugar: {currentPatient.bloodSugar}
               </div>
             </div>
             
             <div className="flex gap-4 flex-wrap text-xs">
               <div className="bg-background/80 border p-2 rounded min-w-[150px]">
                 <div className="text-[10px] uppercase font-mono text-muted-foreground">Allergies</div>
-                <div className="font-medium text-destructive">{patient.allergies.join(", ")}</div>
+                <div className="font-medium text-destructive">{currentPatient.allergies.join(", ")}</div>
               </div>
               <div className="bg-background/80 border p-2 rounded min-w-[150px]">
                 <div className="text-[10px] uppercase font-mono text-muted-foreground">Chronic Conditions</div>
-                <div className="font-medium text-foreground">{patient.chronic.join(", ")}</div>
+                <div className="font-medium text-foreground">{currentPatient.chronic.join(", ")}</div>
               </div>
               <div className="bg-background/80 border p-2 rounded min-w-[150px]">
                 <div className="text-[10px] uppercase font-mono text-muted-foreground">Current Medications</div>
-                <div className="font-medium text-foreground">{patient.currentMeds.join(", ")}</div>
+                <div className="font-medium text-foreground">{currentPatient.currentMeds.join(", ")}</div>
               </div>
             </div>
           </div>

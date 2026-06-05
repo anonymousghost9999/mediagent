@@ -1,5 +1,7 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { getConsultationById } from "@/lib/mediagent/live";
 import { Button } from "@/components/ui/button";
 import { Send, Mic, Sparkles, Check, Loader2, ArrowRight, ShieldCheck } from "lucide-react";
 
@@ -36,6 +38,10 @@ const initialSteps: Step[] = [
 function Page() {
   const { id } = Route.useParams();
   const nav = useNavigate();
+  const { data } = useQuery({
+    queryKey: ["patient-consultation", id],
+    queryFn: async () => getConsultationById(id),
+  });
   const [msgs, setMsgs] = useState<Msg[]>(script);
   const [draft, setDraft] = useState("");
   const [steps, setSteps] = useState<Step[]>(initialSteps);

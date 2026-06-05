@@ -1,10 +1,10 @@
 import { createFileRoute, Link, notFound } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
+import { getConsultationById } from "@/lib/mediagent/live";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { historyDetails } from "@/lib/mediagent/history-details";
 import { treatmentStatusLabel } from "@/lib/mediagent/store";
 import { downloadReportAsPDF } from "@/components/mediagent/im-report-form";
-import { profileStore } from "@/lib/mediagent/store";
 import { ArrowLeft, Download, FileText, Pill, ClipboardList, FileCheck2 } from "lucide-react";
 
 export const Route = createFileRoute("/patient/treatments/history/$id")({
@@ -16,14 +16,35 @@ export const Route = createFileRoute("/patient/treatments/history/$id")({
 
 function Page() {
   const { id } = Route.useParams();
-  const record = historyDetails[id];
-  if (!record) throw notFound();
-  const patient = profileStore.get();
+  const { data } = useQuery({
+    queryKey: ["patient-history-detail", id],
+    queryFn: async () => getConsultationById(id),
+  });
+  const consultation = data?.consultation;
+  const ehr = data?.ehr;
+  const patient = data?.profile;
+  if (!consultation) throw notFound();
+
+  const record = {
+    id,
+    date: consultation.created_at?.slice(0, 10) ?? "—",
+    doctor: consultation.assigned_doctor_id ? consultation.assigned_doctor_id.slice(0, 8) : "—",
+    diagnosis: (ehr?.diagnosis as string | undefined) ?? consultation.status?.replaceAll("_", " ") ?? "Consultation",
+    icd10: (ehr?.icd_10_codes as string[] | undefined)?.[0] ?? "—",
+    prescription: Array.isArray(ehr?.prescriptions) ? (ehr.prescriptions as any[]).map((p) => typeof p === "string" ? p : [p.drug, p.dosage, p.frequency].filter(Boolean).join("; ")) : [],
+    procedures: Array.isArray(ehr?.conflict_warnings) ? (ehr.conflict_warnings as any[]).map((p) => typeof p === "string" ? p : p.message).filter(Boolean) : [],
+    reports: [],
+    recommendations: ehr?.discharge_summary_url ? `Summary stored at ${ehr.discharge_summary_url}` : "Live record loaded from Supabase.",
+    documents: [],
+    status: "TREATMENT_ONGOING" as const,
+    followUp: ehr?.approved_at?.slice(0, 10),
+    notes: ehr?.audio_transcript ?? "—",
+  };
 
   const download = () => downloadReportAsPDF({
     title: `Consultation · ${record.date}`,
-    patientName: patient.fullName,
-    patientMrn: patient.mrn,
+    patientName: patient?.full_name ?? "Patient",
+    patientMrn: patient?.mrn ?? "—",
     doctor: record.doctor,
     data: {
       chief_complaint: record.notes,
