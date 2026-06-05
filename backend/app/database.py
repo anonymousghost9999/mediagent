@@ -33,14 +33,71 @@ if SUPABASE_URL and SUPABASE_KEY:
         print(f"[WARNING] Failed to initialize Supabase client: {e}. Falling back to LOCAL mode.")
 else:
     print("[INFO] Database running in LOCAL JSON mode.")
-
 def save_patient(patient_data: dict) -> dict:
     """
-    Saves a patient record. Automatically generates an ID and timestamps.
+    Saves a patient record. In Supabase mode, this writes to the profiles table.
     """
     p_id = patient_data.get("id") or str(uuid.uuid4())
     now_str = datetime.utcnow().isoformat()
     
+    # Check if p_id is a valid UUID, if not generate one or leave it to fallback
+    is_valid_uuid = True
+    try:
+        uuid.UUID(str(p_id))
+    except ValueError:
+        is_valid_uuid = False
+
+    if supabase_client and is_valid_uuid:
+        try:
+            # Map to profiles table schema
+            record = {
+                "id": p_id,
+                "full_name": patient_data.get("name", "Unknown Patient"),
+                "gender": patient_data.get("gender", "Other"),
+                "preferred_language": patient_data.get("language", "english"),
+                "allergies": patient_data.get("allergies", []),
+                "role": "patient",
+                "updated_at": now_str
+            }
+            # Add medical history as chronic_conditions if present
+            med_hist = patient_data.get("medical_history", "")
+            if med_hist:
+                record["chronic_conditions"] = [med_hist]
+
+            existing = supabase_client.table("profiles").select("*").eq("id", p_id).execute()
+            if existing.data:
+                upd_record = {
+                    "full_name": record["full_name"],
+                    "gender": record["gender"],
+                    "preferred_language": record["preferred_language"],
+                    "allergies": record["allergies"],
+                    "updated_at": now_str
+                }
+                if "chronic_conditions" in record:
+                    upd_record["chronic_conditions"] = record["chronic_conditions"]
+                res = supabase_client.table("profiles").update(upd_record).eq("id", p_id).execute()
+            else:
+                record["email"] = f"patient_{p_id[:8]}@mediagent.com"
+                res = supabase_client.table("profiles").upsert(record).execute()
+                
+            if res.data:
+                ret = res.data[0]
+                return {
+                    "id": ret.get("id"),
+                    "name": ret.get("full_name"),
+                    "gender": ret.get("gender"),
+                    "language": ret.get("preferred_language"),
+                    "allergies": ret.get("allergies", []),
+                    "medical_history": ", ".join(ret.get("chronic_conditions") or []),
+                    "severity_score": patient_data.get("severity_score", 1),
+                    "status": patient_data.get("status", "waiting"),
+                    "created_at": ret.get("created_at")
+                }
+        except Exception as e:
+            print(f"[ERROR] Supabase save_patient failed: {e}. Saving locally.")
+            
+    # Local JSON fallback
+    db = _load_local_db()
     record = {
         "id": p_id,
         "name": patient_data.get("name", "Unknown Patient"),
@@ -53,17 +110,6 @@ def save_patient(patient_data: dict) -> dict:
         "medical_history": patient_data.get("medical_history", ""),
         "created_at": patient_data.get("created_at") or now_str
     }
-    
-    if supabase_client:
-        try:
-            res = supabase_client.table("patients").upsert(record).execute()
-            if res.data:
-                return res.data[0]
-        except Exception as e:
-            print(f"[ERROR] Supabase save_patient failed: {e}. Saving locally.")
-            
-    # Local JSON fallback
-    db = _load_local_db()
     db["patients"][p_id] = record
     _save_local_db(db)
     return record
@@ -72,11 +118,25 @@ def get_patient(patient_id: str) -> dict:
     """
     Retrieves a patient by ID.
     """
-    if supabase_client:
+    is_valid_uuid = True
+    try:
+        uuid.UUID(str(patient_id))
+    except ValueError:
+        is_valid_uuid = False
+
+    if supabase_client and is_valid_uuid:
         try:
-            res = supabase_client.table("patients").select("*").eq("id", patient_id).execute()
+            res = supabase_client.table("profiles").select("*").eq("id", patient_id).execute()
             if res.data:
-                return res.data[0]
+                profile = res.data[0]
+                return {
+                    "id": profile.get("id"),
+                    "name": profile.get("full_name"),
+                    "gender": profile.get("gender"),
+                    "language": profile.get("preferred_language"),
+                    "allergies": profile.get("allergies") or [],
+                    "medical_history": ", ".join(profile.get("chronic_conditions") or [])
+                }
         except Exception as e:
             print(f"[ERROR] Supabase get_patient failed: {e}. Querying locally.")
             
@@ -89,10 +149,27 @@ def list_patients() -> list:
     """
     if supabase_client:
         try:
-            # Note: sorting logic may vary; we will query and sort locally or query sorted
-            res = supabase_client.table("patients").select("*").execute()
+            res = supabase_client.table("profiles").select("*").eq("role", "patient").execute()
             if res.data:
-                patients = res.data
+                try:
+                    consults_res = supabase_client.table("consultations").select("patient_id, status, severity_score").execute()
+                    consults_map = {c["patient_id"]: c for c in consults_res.data if c.get("patient_id")}
+                except Exception:
+                    consults_map = {}
+                
+                patients = []
+                for p in res.data:
+                    c = consults_map.get(p["id"], {})
+                    patients.append({
+                        "id": p["id"],
+                        "name": p["full_name"],
+                        "gender": p["gender"],
+                        "language": p["preferred_language"],
+                        "allergies": p["allergies"] or [],
+                        "status": c.get("status", "waiting"),
+                        "severity_score": c.get("severity_score", 1),
+                        "created_at": p["created_at"]
+                    })
                 patients.sort(key=lambda x: (-x.get("severity_score", 1), x.get("created_at", "")))
                 return patients
         except Exception as e:
@@ -113,6 +190,11 @@ def save_consultation(consult_data: dict) -> dict:
     record = {
         "id": c_id,
         "patient_id": consult_data.get("patient_id"),
+        "status": consult_data.get("status", "drafting"),
+        "severity_score": consult_data.get("severity_score", 3),
+        "intake_summary": consult_data.get("intake_summary", ""),
+        "chief_complaint": consult_data.get("chief_complaint", ""),
+        "follow_up_recommendation": consult_data.get("follow_up_recommendation", ""),
         "symptoms": consult_data.get("symptoms", []),
         "diagnosis": consult_data.get("diagnosis", ""),
         "icd10_code": consult_data.get("icd10_code", ""),
@@ -140,6 +222,21 @@ def save_consultation(consult_data: dict) -> dict:
     db["consultations"][c_id] = record
     _save_local_db(db)
     return record
+
+def get_consultation(consultation_id: str) -> dict:
+    """
+    Retrieves a consultation by its ID.
+    """
+    if supabase_client:
+        try:
+            res = supabase_client.table("consultations").select("*").eq("id", consultation_id).execute()
+            if res.data:
+                return res.data[0]
+        except Exception as e:
+            print(f"[ERROR] Supabase get_consultation failed: {e}. Querying locally.")
+            
+    db = _load_local_db()
+    return db["consultations"].get(consultation_id)
 
 def get_consultations(patient_id: str) -> list:
     """

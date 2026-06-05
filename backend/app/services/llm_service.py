@@ -224,6 +224,39 @@ def parse_image_input(image_bytes: bytes) -> str:
         print(f"[ERROR] OpenRouter image analysis failed: {e}.")
         raise e
 
+def parse_json_robust(text: str) -> dict:
+    import re
+    # Strip whitespace
+    text = text.strip()
+    
+    # Remove markdown wrappers
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        if text.startswith("json"):
+            text = text[4:].strip()
+            
+    # Find outer bounds of JSON object
+    start_idx = text.find("{")
+    end_idx = text.rfind("}")
+    if start_idx != -1 and end_idx != -1:
+        text = text[start_idx:end_idx+1]
+        
+    # Remove trailing commas before closing braces/brackets
+    text = re.sub(r',\s*([\]}])', r'\1', text)
+    
+    try:
+        return json.loads(text)
+    except Exception as e:
+        print(f"[parse_json_robust] First attempt failed: {e}. Trying to fix quotes.")
+        # Attempt to fix single quotes to double quotes for keys/values
+        # (Be very careful not to break valid double quotes)
+        try:
+            # Replace control characters/invalid spaces
+            text_cleaned = re.sub(r'[\x00-\x1F\x7F]', '', text)
+            return json.loads(text_cleaned)
+        except Exception:
+            raise e
+
 def analyze_symptoms_and_history(symptoms_text: str, history_text: str, language: str) -> dict:
     """
     Intakes symptoms and history, reasons like a doctor (differential diagnoses), ESI severity (1-5), and relief instructions using OpenRouter.
@@ -297,12 +330,7 @@ Ensure the JSON is properly formatted, valid, and contains no code markdown bloc
     try:
         messages = [{"role": "user", "content": prompt}]
         text = call_openrouter(messages)
-        # Clean markdown wrapper if LLM outputs it despite instructions
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-            if text.startswith("json"):
-                text = text[4:].strip()
-        return json.loads(text)
+        return parse_json_robust(text)
     except Exception as e:
         print(f"[ERROR] OpenRouter analyze_symptoms failed: {e}.")
         raise e
@@ -346,11 +374,7 @@ Ensure the JSON is properly formatted and contains no markdown wrappers.
     try:
         messages = [{"role": "user", "content": prompt}]
         text = call_openrouter(messages)
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-            if text.startswith("json"):
-                text = text[4:].strip()
-        return json.loads(text)
+        return parse_json_robust(text)
     except Exception as e:
         print(f"[ERROR] OpenRouter extract_medical_summary failed: {e}.")
         raise e
@@ -386,11 +410,7 @@ Ensure the JSON is properly formatted and contains no markdown wrappers.
     try:
         messages = [{"role": "user", "content": prompt}]
         text = call_openrouter(messages)
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-            if text.startswith("json"):
-                text = text[4:].strip()
-        return json.loads(text)
+        return parse_json_robust(text)
     except Exception as e:
         print(f"[ERROR] OpenRouter evaluate_drug_safety failed: {e}.")
         raise e

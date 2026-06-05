@@ -108,7 +108,18 @@ function Page() {
     }
     initConsult();
 
-    // Load intake report from local storage if available
+  }, [id]);
+
+  useEffect(() => {
+    if (data?.consultation) {
+      setPre({
+        chiefComplaint: data.consultation.chief_complaint || data.consultation.intake_english_translation || "No symptoms captured",
+        severity: String(data.consultation.severity_score ?? 3),
+        patientReports: data.consultation.intake_summary || data.consultation.intake_english_translation || "No prior guidance",
+      });
+      return;
+    }
+
     const stored = localStorage.getItem(`mediagent_report_${id}`);
     if (stored) {
       try {
@@ -123,7 +134,7 @@ function Page() {
         console.error("Failed to parse stored report for pre-consultation", err);
       }
     }
-  }, [id]);
+  }, [id, data]);
 
   const updateField = (fid: string, st: ReviewStatus, edit?: string) => {
     setFields((fs) => fs.map((f) => (f.id === fid ? { ...f, status: st, ai: edit ?? f.ai } : f)));

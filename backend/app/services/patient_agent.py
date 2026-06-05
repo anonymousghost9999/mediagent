@@ -122,6 +122,21 @@ def run_patient_intake(
     patient["status"] = "waiting"
     db.save_patient(patient)
     
+    # Save/update consultation details in DB
+    consult = db.get_consultation(patient_id) or {}
+    consult.update({
+        "id": patient_id,
+        "patient_id": consult.get("patient_id") or patient_id,
+        "status": "waiting",
+        "severity_score": clinical_analysis.get("severity_score", 3),
+        "chief_complaint": clinical_analysis.get("primary_issue") or english_translation,
+        "intake_summary": health_guidance_english,
+        "original_language": bcp47,
+        "intake_original_transcript": original_transcript,
+        "intake_english_translation": english_translation,
+    })
+    db.save_consultation(consult)
+    
     # Compile output report (preserving original, translated, and newly extracted fields)
     report = {
         "patient_id": patient_id,
