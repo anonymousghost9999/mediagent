@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -8,14 +8,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { aiFields, safetyAlerts, patient, timeline } from "@/lib/mediagent/data";
+import { aiFields, safetyAlerts, patient, timeline, severityLabel, type Severity } from "@/lib/mediagent/data";
 import { StatusPill, DraftBadge } from "@/components/mediagent/badges";
 import { IMReportForm, downloadReportAsPDF } from "@/components/mediagent/im-report-form";
 import { logAudit, treatmentStatuses, treatmentStatusLabel, type TreatmentStatus } from "@/lib/mediagent/store";
 import { getConsultationById } from "@/lib/mediagent/live";
 import type { IMReportData } from "@/lib/mediagent/im-report";
+import { startConsultation, transcribeConsultation, approveConsultation } from "@/lib/api/client";
 import {
-  AlertTriangle, Check, Pencil, X, ShieldCheck, Mic, MicOff, Save, Download, FileText,
+  AlertTriangle, Check, Pencil, X, ShieldCheck, Mic, MicOff, Save, Download, FileText, Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 import type { ReviewStatus } from "@/lib/mediagent/data";
@@ -59,6 +60,7 @@ function Page() {
 
   // Voice transcription
   const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
   const [transcript, setTranscript] = useState<string[]>([
     "DOCTOR: Tell me when this started.",
     "PATIENT: About two days ago, after the dust storm.",
@@ -83,6 +85,44 @@ function Page() {
   // Treatment status
   const [status, setStatus] = useState<TreatmentStatus>("TREATMENT_ONGOING");
   const [followUp, setFollowUp] = useState("");
+
+  const [liveConsultationOutput, setLiveConsultationOutput] = useState<any>(null);
+  const [liveSafetyAlerts, setLiveSafetyAlerts] = useState<any[]>([]);
+
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const hasStartedRef = useRef(false);
+
+  // Trigger startConsultation on first mount only (guarded with ref to prevent re-calls on re-render)
+  useEffect(() => {
+    async function initConsult() {
+      if (hasStartedRef.current) return;
+      hasStartedRef.current = true;
+      try {
+        await startConsultation(id);
+      } catch (err) {
+        // Patient may not exist in DB yet (e.g. mock queue patient) — safe to ignore
+        console.error("Failed to signal consultation start to backend:", err);
+      }
+    }
+    initConsult();
+
+    // Load intake report from local storage if available
+    const stored = localStorage.getItem(`mediagent_report_${id}`);
+    if (stored) {
+      try {
+        const reportData = JSON.parse(stored);
+        setPre({
+          chiefComplaint: reportData.english_translation || "No symptoms captured",
+          // Store the raw ESI score (1 = most critical, 5 = least urgent) directly — no inversion
+          severity: String(reportData.severity_score ?? 3),
+          patientReports: reportData.agent_response_english || "No prior guidance",
+        });
+      } catch (err) {
+        console.error("Failed to parse stored report for pre-consultation", err);
+      }
+    }
+  }, [id]);
 
   const updateField = (fid: string, st: ReviewStatus, edit?: string) => {
     setFields((fs) => fs.map((f) => (f.id === fid ? { ...f, status: st, ai: edit ?? f.ai } : f)));
@@ -109,19 +149,92 @@ function Page() {
     toast.success("Pre-consultation updated", { description: "Change recorded in audit log." });
   };
 
-  const toggleRecording = () => {
+  const toggleRecording = async () => {
     if (recording) {
+      if (mediaRecorderRef.current) {
+        mediaRecorderRef.current.stop();
+        mediaRecorderRef.current.stream.getTracks().forEach((track) => track.stop());
+      }
       setRecording(false);
       logAudit({ actor: "Dr. Mehta", action: "TRANSCRIPTION_STOPPED", entity: `consultation:${id}` });
-      toast.info("Voice transcription stopped");
+      toast.info("Voice transcription stopped. Processing recording...");
     } else {
-      setRecording(true);
-      logAudit({ actor: "Dr. Mehta", action: "TRANSCRIPTION_STARTED", entity: `consultation:${id}` });
-      toast.success("Voice transcription started", { description: "Listening to consultation…" });
-      // Simulate live transcript append
-      setTimeout(() => {
-        setTranscript((t) => [...t, "DOCTOR: Let's check your peak flow."]);
-      }, 1200);
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const mediaRecorder = new MediaRecorder(stream);
+        mediaRecorderRef.current = mediaRecorder;
+        audioChunksRef.current = [];
+
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            audioChunksRef.current.push(event.data);
+          }
+        };
+
+        mediaRecorder.onstop = async () => {
+          const audioBlob = new Blob(audioChunksRef.current, { type: "audio/wav" });
+          await uploadConsultationAudio(audioBlob);
+        };
+
+        mediaRecorder.start();
+        setRecording(true);
+        logAudit({ actor: "Dr. Mehta", action: "TRANSCRIPTION_STARTED", entity: `consultation:${id}` });
+        toast.success("Voice transcription started", { description: "Listening to consultation…" });
+      } catch (err) {
+        console.error("Mic access failed", err);
+        toast.error("Microphone access failed.");
+      }
+    }
+  };
+
+  const uploadConsultationAudio = async (audioBlob: Blob) => {
+    setTranscribing(true);
+    const toastId = toast.loading("Transcribing and extracting clinical facts...");
+    try {
+      const formData = new FormData();
+      formData.append("patient_id", id);
+      formData.append("audio_file", audioBlob, "consultation.wav");
+
+      const res = await transcribeConsultation(formData);
+      setLiveConsultationOutput(res);
+
+      toast.success("Dialogue transcribed and clinical summary extracted!", { id: toastId });
+
+      if (res.raw_transcript) {
+        setTranscript(res.raw_transcript.split("\n"));
+      } else {
+        setTranscript([
+          `PATIENT: [Translated Speech Dialogue]`,
+          res.english_transcript || "Consultation complete."
+        ]);
+      }
+
+      setFields((fs) => fs.map((f) => {
+        if (f.id === "f1") {
+          return {
+            ...f,
+            ai: `${res.diagnosis || "Undiagnosed"} (${res.icd10_code || "J03.90"})`,
+            status: "PENDING_REVIEW"
+          };
+        }
+        if (f.id === "f2") {
+          const medsStr = res.prescribed_drugs && res.prescribed_drugs.length > 0
+            ? res.prescribed_drugs.map((d: any) => `${d.name} ${d.dosage} - ${d.frequency} for ${d.duration}`).join("; ")
+            : "No medications prescribed";
+          return {
+            ...f,
+            ai: medsStr,
+            status: "PENDING_REVIEW"
+          };
+        }
+        return f;
+      }));
+
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to transcribe dialogue. Using mockup fallbacks.", { id: toastId });
+    } finally {
+      setTranscribing(false);
     }
   };
 
@@ -136,31 +249,125 @@ function Page() {
   };
 
   const allApproved = fields.every((f) => f.status === "APPROVED" || f.status === "MODIFIED_AND_APPROVED");
-  const hasCritical = safetyAlerts.some((a) => (a.level as string) === "CRITICAL");
+  const hasCritical = (liveSafetyAlerts.length > 0 ? liveSafetyAlerts : safetyAlerts).some(
+    (a) => (a.level as string).toUpperCase() === "CRITICAL"
+  );
 
-  const finalize = () => {
-    logAudit({
-      actor: "Dr. Mehta",
-      action: "EHR_FINALIZED",
-      entity: `consultation:${id}`,
-      after: { status, followUp, analysis, report },
-    });
-    downloadReportAsPDF({
-      title: `Consultation Report · ${id}`,
-    patientName: currentPatient.fullName,
-    patientMrn: currentPatient.mrn,
-      doctor: "Dr. R. Mehta",
-      data: report,
-      extras: {
-        "Doctor analysis": analysis.analysis || "—",
-        "Diagnosis": analysis.diagnosis || "—",
-        "Prescription": analysis.prescription || "—",
-        "Clinical notes": analysis.clinicalNotes || "—",
-        "Treatment status": treatmentStatusLabel[status],
-        "Follow-up": followUp || "—",
-      },
-    });
-    toast.success("EHR finalized — PDF generated");
+  const finalize = async () => {
+    const toastId = toast.loading("Persisting EHR & performing clinical safety audit...");
+    try {
+      const intakeData = localStorage.getItem(`mediagent_report_${id}`);
+      const intakeReportParsed = intakeData ? JSON.parse(intakeData) : {
+        original_language: "en-IN",
+        original_transcript: pre.chiefComplaint,
+        english_translation: pre.chiefComplaint,
+        agent_response_english: pre.patientReports,
+        agent_response_translated: pre.patientReports,
+        // pre.severity is now the raw ESI score — use it directly
+        severity_score: Number(pre.severity)
+      };
+
+      const diagnosisField = fields.find((f) => f.id === "f1")?.ai || "";
+      const prescriptionField = fields.find((f) => f.id === "f2")?.ai || "";
+      const followUpField = fields.find((f) => f.id === "f3")?.ai || "";
+
+      const diagParts = diagnosisField.match(/(.+?)\s*\((.+?)\)/) || [null, diagnosisField, "I20.9"];
+      const diagnosisText = diagParts[1]?.trim() || diagnosisField;
+      const icd10Text = diagParts[2]?.trim() || "I20.9";
+
+      const parsedMeds = prescriptionField.split(";").map((medStr) => {
+        const trimmed = medStr.trim();
+        const parts = trimmed.split(" ");
+        const name = parts[0] || "Medication";
+        return {
+          name,
+          dosage: parts[1] || "500mg",
+          frequency: parts.slice(2).join(" ") || "As directed",
+          duration: "5 days"
+        };
+      });
+
+      const consultationOutputParsed = liveConsultationOutput || {
+        raw_transcript: transcript.join("\n"),
+        english_transcript: transcript.join("\n"),
+        diagnosis: diagnosisText,
+        icd10_code: icd10Text,
+        prescribed_drugs: parsedMeds,
+        symptoms: [pre.chiefComplaint]
+      };
+
+      const res = await approveConsultation({
+        patient_id: id,
+        patient_intake_output: intakeReportParsed,
+        consultation_output: consultationOutputParsed,
+        doctor_edits: {
+          diagnosis: diagnosisText,
+          icd10_code: icd10Text,
+          prescribed_drugs: parsedMeds,
+          doctor_notes: analysis.clinicalNotes
+        }
+      });
+
+      toast.success("EHR finalized and verified!", { id: toastId });
+
+      if (res.safety_audit) {
+        const audit = res.safety_audit;
+        if (audit.has_conflict) {
+          setLiveSafetyAlerts([{ level: audit.severity, msg: audit.description }]);
+          toast.warning(`Safety Conflict Alert: [${audit.severity}] - ${audit.description}`, { duration: 15000 });
+        } else {
+          setLiveSafetyAlerts([{ level: "LOW", msg: "No drug safety conflicts or allergy alerts found." }]);
+        }
+      }
+
+      downloadReportAsPDF({
+        title: `Finalized Consultation Report · ${id}`,
+        patientName: currentPatient.fullName,
+        patientMrn: currentPatient.mrn,
+        doctor: "Dr. R. Mehta",
+        data: {
+          chief_complaint: pre.chiefComplaint,
+          severity: `${pre.severity} ${severityLabel[Number(pre.severity) as Severity] || "Medium"}`
+        },
+        extras: {
+          "Doctor analysis": analysis.analysis || "Approved pre-consultation summary",
+          "Diagnosis": `${diagnosisText} (${icd10Text})`,
+          "Prescription": prescriptionField,
+          "Clinical notes": analysis.clinicalNotes || "No notes",
+          "Treatment status": treatmentStatusLabel[status],
+          "Follow-up": followUpField || "Review as scheduled",
+          "Bilingual Discharge (Sarvam)": res.translated_discharge || "No translation",
+          "Insurance Pre-auth Status": res.insurance_preauth?.preauth_status || "Pending review"
+        },
+      });
+
+      logAudit({
+        actor: "Dr. Mehta",
+        action: "EHR_FINALIZED",
+        entity: `consultation:${id}`,
+        after: res
+      });
+
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to finalize EHR with backend. Using local PDF fallback.", { id: toastId });
+      
+      downloadReportAsPDF({
+        title: `Consultation Report (Fallback) · ${id}`,
+        patientName: currentPatient.fullName,
+        patientMrn: currentPatient.mrn,
+        doctor: "Dr. R. Mehta",
+        data: report,
+        extras: {
+          "Doctor analysis": analysis.analysis || "—",
+          "Diagnosis": analysis.diagnosis || "—",
+          "Prescription": analysis.prescription || "—",
+          "Clinical notes": analysis.clinicalNotes || "—",
+          "Treatment status": treatmentStatusLabel[status],
+          "Follow-up": followUp || "—",
+        },
+      });
+    }
   };
 
   return (
@@ -178,13 +385,14 @@ function Page() {
               size="sm"
               variant={recording ? "destructive" : "default"}
               onClick={toggleRecording}
+              disabled={transcribing}
             >
               {recording ? <><MicOff className="h-3.5 w-3.5 mr-1.5" />Stop transcription</> : <><Mic className="h-3.5 w-3.5 mr-1.5" />Start voice transcription</>}
             </Button>
           </div>
         </header>
 
-        {/* Patient Details Banner (always visible, not a sidebar) */}
+        {/* Patient Details Banner */}
         <Card className="p-4 border-accent/20 bg-accent-soft/20">
           <div className="flex flex-wrap gap-6 items-center justify-between">
             <div className="space-y-1">
@@ -235,8 +443,8 @@ function Page() {
             {!preEditing ? (
               <>
                 <p><b>Chief complaint:</b> {pre.chiefComplaint}</p>
-                <p><b>Severity:</b> {pre.severity} / 5</p>
-                <p><b>Patient reports:</b> {pre.patientReports}</p>
+                <p><b>Severity (ESI):</b> {pre.severity} / 5</p>
+                <p><b>AI Pre-Assessment:</b> {pre.patientReports}</p>
                 <p className="text-[11px] text-muted-foreground pt-1">Confirm with the patient before editing. All changes are recorded in the audit log.</p>
               </>
             ) : (
@@ -263,19 +471,26 @@ function Page() {
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="text-base">Live transcript</CardTitle>
             <span className={`chip ${recording ? "bg-destructive/15 text-foreground border border-destructive/40" : "bg-muted text-muted-foreground"}`}>
-              {recording ? "● Recording" : "Paused"}
+              {recording ? "● Recording" : transcribing ? "● Processing" : "Paused"}
             </span>
           </CardHeader>
           <CardContent className="text-sm space-y-2 max-h-72 overflow-auto font-mono text-xs">
-            {transcript.map((line, i) => {
-              const isDoc = line.startsWith("DOCTOR:");
-              return (
-                <div key={i}>
-                  <span className={isDoc ? "text-accent" : "text-muted-foreground"}>{line.split(":")[0]}:</span>
-                  {line.slice(line.indexOf(":") + 1)}
-                </div>
-              );
-            })}
+            {transcribing ? (
+              <div className="flex items-center gap-2 py-4 text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin text-accent" />
+                Transcribing recording and extracting medical concepts...
+              </div>
+            ) : (
+              transcript.map((line, i) => {
+                const isDoc = line.startsWith("DOCTOR:");
+                return (
+                  <div key={i}>
+                    <span className={isDoc ? "text-accent" : "text-muted-foreground"}>{line.split(":")[0]}:</span>
+                    {line.slice(line.indexOf(":") + 1)}
+                  </div>
+                );
+              })
+            )}
             <div className="text-muted-foreground italic">
               [Consultation Agent · en · {recording ? "live · confidence 0.94" : "idle"}]
             </div>
@@ -397,15 +612,15 @@ function Page() {
 
         <Card className="p-4 space-y-2">
           <div className="flex items-center gap-2 text-sm font-semibold"><ShieldCheck className="h-4 w-4 text-accent" /> Medication safety</div>
-          {safetyAlerts.map((a, i) => (
+          {(liveSafetyAlerts.length > 0 ? liveSafetyAlerts : safetyAlerts).map((a, i) => (
             <div key={i} className="text-xs flex gap-2 items-start">
-              <AlertTriangle className={`h-3.5 w-3.5 mt-0.5 ${a.level === "HIGH" ? "text-warning" : "text-muted-foreground"}`} />
+              <AlertTriangle className={`h-3.5 w-3.5 mt-0.5 ${a.level === "HIGH" || a.level === "High" ? "text-destructive" : "text-muted-foreground"}`} />
               <div><b>{a.level}:</b> {a.msg}</div>
             </div>
           ))}
         </Card>
 
-        <Button className="w-full" size="lg" disabled={!allApproved || hasCritical} onClick={finalize}>
+        <Button className="w-full" size="lg" disabled={!allApproved || hasCritical || transcribing} onClick={finalize}>
           Finalize EHR & download PDF
         </Button>
         {!allApproved && <p className="text-[10px] text-muted-foreground text-center">All AI fields must be reviewed before finalization.</p>}

@@ -6,7 +6,7 @@ import { doctorQueue, safetyAlerts } from "@/lib/mediagent/data";
 import { SeverityChip } from "@/components/mediagent/badges";
 import {
   ArrowRight, AlertTriangle, Clock, Sparkles, ShieldAlert,
-  CheckCircle2, ScrollText, Activity,
+  CheckCircle2, ScrollText, Activity, Loader2,
 } from "lucide-react";
 
 export const Route = createFileRoute("/doctor/dashboard")({ component: Page });
@@ -116,24 +116,35 @@ function Page() {
               <Link to="/doctor/queue" className="text-xs text-muted-foreground hover:text-foreground">View all</Link>
             </div>
             <div className="space-y-2">
-              {sorted.map((q) => (
-                <Link
-                  key={q.id}
-                  to="/doctor/consultations/$id"
-                  params={{ id: q.id }}
-                  className={`soft-card block p-4 hover:border-accent/40 hover:shadow-md transition ${q.id === current.id ? "border-accent/60 ring-1 ring-accent/30" : ""}`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="font-medium">{q.patient}</div>
-                    <SeverityChip level={q.severity} />
-                  </div>
-                  <div className="text-xs text-muted-foreground mt-1 line-clamp-1">{q.complaint}</div>
-                  <div className="flex items-center justify-between mt-3 text-[11px] font-mono text-muted-foreground">
-                    <span className="inline-flex items-center gap-1"><Clock className="h-3 w-3" /> {q.waited}</span>
-                    <span>{q.id}</span>
-                  </div>
-                </Link>
-              ))}
+              {queueRows === undefined ? (
+                <div className="soft-card p-6 flex flex-col items-center justify-center text-muted-foreground">
+                  <Loader2 className="h-6 w-6 animate-spin text-accent mb-2" />
+                  <span className="text-xs">Loading queue...</span>
+                </div>
+              ) : sorted.length === 0 ? (
+                <div className="soft-card p-6 text-center text-xs text-muted-foreground">
+                  No active patients in queue.
+                </div>
+              ) : (
+                sorted.map((q) => (
+                  <Link
+                    key={q.id}
+                    to="/doctor/consultations/$id"
+                    params={{ id: q.id }}
+                    className={`soft-card block p-4 hover:border-accent/40 hover:shadow-md transition ${q.id === current.id ? "border-accent/60 ring-1 ring-accent/30" : ""}`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="font-medium">{q.patient}</div>
+                      <SeverityChip level={q.severity} />
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-1 line-clamp-1">{q.complaint}</div>
+                    <div className="flex items-center justify-between mt-3 text-[11px] font-mono text-muted-foreground">
+                      <span className="inline-flex items-center gap-1"><Clock className="h-3 w-3" /> {q.waited}</span>
+                      <span>{q.id}</span>
+                    </div>
+                  </Link>
+                ))
+              )}
             </div>
           </section>
 
@@ -163,18 +174,20 @@ function Page() {
                     <Sparkles className="h-3.5 w-3.5" /> AI pre-consultation summary
                   </div>
                   <p className="text-sm mt-2 leading-relaxed">
-                    Suggests acute bronchospasm on background of mild persistent asthma.
-                    Rescue inhaler used 3× in last 24h. Recommend reviewing controller therapy.
+                    Suggests ESI Level {6 - current.severity} clinical response.
+                    Review history and active symptoms when initiating workspace.
                   </p>
                 </div>
 
-                <Link
-                  to="/doctor/consultations/$id"
-                  params={{ id: current.id }}
-                  className="inline-flex items-center gap-2 rounded-lg bg-primary text-primary-foreground px-5 py-3 text-sm font-medium hover:opacity-90 transition"
-                >
-                  Open consultation workspace <ArrowRight className="h-4 w-4" />
-                </Link>
+                {sorted.length > 0 && (
+                  <Link
+                    to="/doctor/consultations/$id"
+                    params={{ id: current.id }}
+                    className="inline-flex items-center gap-2 rounded-lg bg-primary text-primary-foreground px-5 py-3 text-sm font-medium hover:opacity-90 transition"
+                  >
+                    Open consultation workspace <ArrowRight className="h-4 w-4" />
+                  </Link>
+                )}
               </div>
             </div>
           </section>

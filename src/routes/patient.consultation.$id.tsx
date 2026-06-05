@@ -3,7 +3,10 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getConsultationById } from "@/lib/mediagent/live";
 import { Button } from "@/components/ui/button";
-import { Send, Mic, Sparkles, Check, Loader2, ArrowRight, ShieldCheck } from "lucide-react";
+import { Send, Mic, MicOff, Sparkles, Check, Loader2, ArrowRight, ShieldCheck } from "lucide-react";
+import { postIntake, postIntakeAudio } from "@/lib/api/client";
+import { patient as patientData } from "@/lib/mediagent/data";
+import { toast } from "sonner";
 
 export const Route = createFileRoute("/patient/consultation/$id")({
   validateSearch: (s: Record<string, unknown>) => ({
@@ -16,14 +19,7 @@ export const Route = createFileRoute("/patient/consultation/$id")({
 type Msg = { from: "agent" | "patient"; text: string };
 
 const script: Msg[] = [
-  { from: "agent", text: "Hi, I'm MediAgent. What's bothering you today?" },
-];
-
-const followUps = [
-  "How severe is the wheezing on a scale of 1 to 5?",
-  "Any fever, chest pain, or shortness of breath at rest?",
-  "Are you taking your inhaler regularly?",
-  "Thanks — I have enough to prepare a report for your doctor.",
+  { from: "agent", text: "Hi, I'm MediAgent. Please describe what symptoms you are experiencing today." },
 ];
 
 type Step = { id: string; label: string; state: "pending" | "running" | "done" };
@@ -37,6 +33,7 @@ const initialSteps: Step[] = [
 
 function Page() {
   const { id } = Route.useParams();
+  const search = Route.useSearch();
   const nav = useNavigate();
   const { data } = useQuery({
     queryKey: ["patient-consultation", id],
@@ -46,37 +43,179 @@ function Page() {
   const [draft, setDraft] = useState("");
   const [steps, setSteps] = useState<Step[]>(initialSteps);
   const [typing, setTyping] = useState(false);
-  const turnRef = useRef(0);
+  const [recording, setRecording] = useState(false);
+  const [resolvedId, setResolvedId] = useState(id);
+  const [loading, setLoading] = useState(false);
+
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    // Generate or resolve patient ID on load
+    if (id === "C-NEW") {
+      const newId = `patient-${Math.floor(1000 + Math.random() * 9000)}`;
+      setResolvedId(newId);
+    } else {
+      setResolvedId(id);
+    }
+  }, [id]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [msgs, typing]);
 
-  const advanceStep = (idx: number) => {
-    setSteps((prev) => prev.map((s, i) => {
-      if (i < idx) return { ...s, state: "done" };
-      if (i === idx) return { ...s, state: "running" };
-      return s;
-    }));
-    setTimeout(() => {
-      setSteps((prev) => prev.map((s, i) => i === idx ? { ...s, state: "done" } : s));
-    }, 800);
-  };
-
-  const send = () => {
-    if (!draft.trim()) return;
+  const send = async () => {
+    if (!draft.trim() || loading) return;
     const userText = draft;
     setDraft("");
     setMsgs((m) => [...m, { from: "patient", text: userText }]);
-    advanceStep(Math.min(turnRef.current, steps.length - 1));
     setTyping(true);
-    setTimeout(() => {
-      const next = followUps[turnRef.current] ?? "Got it. Anything else?";
-      setMsgs((m) => [...m, { from: "agent", text: next }]);
+    setLoading(true);
+
+    // Set first steps to running
+    setSteps((prev) => prev.map((s, i) => i === 0 ? { ...s, state: "running" } : s));
+
+    try {
+      const res = await postIntake({
+        patient_id: resolvedId,
+        name: patientData.fullName,
+        age: patientData.age,
+        gender: patientData.gender,
+        allergies: patientData.allergies,
+        medical_history: `${patientData.chronic.join(", ")}. ${patientData.currentMeds.join(", ")}`,
+        symptom_text: userText,
+        language: search.lang === "te" ? "telugu" : search.lang === "hi" ? "hindi" : "english",
+      });
+
+      // Complete all steps
+      setSteps([
+        { id: "s1", label: "Symptoms captured", state: "done" },
+        { id: "s2", label: "Medical history recorded", state: "done" },
+        { id: "s3", label: "Severity assessment", state: "done" },
+        { id: "s4", label: "Pre-consultation report", state: "done" },
+      ]);
+
+      // Save report details to localStorage
+      localStorage.setItem(`mediagent_report_${resolvedId}`, JSON.stringify(res));
+      localStorage.setItem(`mediagent_patient_id`, resolvedId);
+
+      setMsgs((m) => [...m, { from: "agent", text: res.agent_response_translated }]);
+
+      // Audio Speech playback
+      if (res.agent_response_audio) {
+        try {
+          const audioUrl = `data:audio/wav;base64,${res.agent_response_audio}`;
+          const audio = new Audio(audioUrl);
+          await audio.play();
+        } catch (audioErr) {
+          console.error("Audio playback failed:", audioErr);
+        }
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to connect to backend. Falling back to mock.");
+      setSteps(initialSteps.map((s) => ({ ...s, state: "done" })));
+      setMsgs((m) => [...m, { from: "agent", text: "Report generated successfully based on symptoms." }]);
+    } finally {
       setTyping(false);
-      turnRef.current += 1;
-    }, 900);
+      setLoading(false);
+    }
+  };
+
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: "audio/wav" });
+        await submitAudio(audioBlob);
+      };
+
+      mediaRecorder.start();
+      setRecording(true);
+      toast.success("Recording started... Speak now.");
+    } catch (err) {
+      console.error("Mic access error:", err);
+      toast.error("Could not access microphone.");
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && recording) {
+      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current.stream.getTracks().forEach((track) => track.stop());
+      setRecording(false);
+      toast.info("Recording stopped. Processing...");
+    }
+  };
+
+  const submitAudio = async (audioBlob: Blob) => {
+    setLoading(true);
+    setTyping(true);
+    setMsgs((m) => [...m, { from: "patient", text: "[Sent audio message]" }]);
+    setSteps((prev) => prev.map((s, i) => i === 0 ? { ...s, state: "running" } : s));
+
+    try {
+      const formData = new FormData();
+      formData.append("name", patientData.fullName);
+      formData.append("age", String(patientData.age));
+      formData.append("gender", patientData.gender);
+      formData.append("allergies", JSON.stringify(patientData.allergies));
+      formData.append("medical_history", `${patientData.chronic.join(", ")}. ${patientData.currentMeds.join(", ")}`);
+      formData.append("language", search.lang === "te" ? "telugu" : search.lang === "hi" ? "hindi" : "english");
+      formData.append("patient_id", resolvedId);
+      formData.append("audio_file", audioBlob, "intake.wav");
+
+      const res = await postIntakeAudio(formData);
+
+      setSteps([
+        { id: "s1", label: "Symptoms captured", state: "done" },
+        { id: "s2", label: "Medical history recorded", state: "done" },
+        { id: "s3", label: "Severity assessment", state: "done" },
+        { id: "s4", label: "Pre-consultation report", state: "done" },
+      ]);
+
+      // Save report details to localStorage
+      localStorage.setItem(`mediagent_report_${resolvedId}`, JSON.stringify(res));
+      localStorage.setItem(`mediagent_patient_id`, resolvedId);
+
+      // Update patient's message bubble with transcript
+      setMsgs((m) => {
+        const updated = [...m];
+        if (updated.length > 0 && updated[updated.length - 1].text === "[Sent audio message]") {
+          updated[updated.length - 1] = { from: "patient", text: res.original_transcript || "[Audio Symptom]" };
+        }
+        return [...updated, { from: "agent", text: res.agent_response_translated }];
+      });
+
+      if (res.agent_response_audio) {
+        try {
+          const audioUrl = `data:audio/wav;base64,${res.agent_response_audio}`;
+          const audio = new Audio(audioUrl);
+          await audio.play();
+        } catch (audioErr) {
+          console.error("Audio playback failed:", audioErr);
+        }
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to evaluate audio intake. Falling back to mock.");
+      setSteps(initialSteps.map((s) => ({ ...s, state: "done" })));
+      setMsgs((m) => [...m, { from: "agent", text: "Prepared report based on audio intake." }]);
+    } finally {
+      setTyping(false);
+      setLoading(false);
+    }
   };
 
   const allDone = steps.every((s) => s.state === "done");
@@ -87,7 +226,7 @@ function Page() {
         {/* Chat */}
         <div className="flex flex-col min-h-[calc(100vh-9rem)]">
           <header className="pb-4">
-            <div className="text-xs font-mono uppercase tracking-widest text-muted-foreground">Consultation · {id}</div>
+            <div className="text-xs font-mono uppercase tracking-widest text-muted-foreground">Consultation · {resolvedId}</div>
             <h1 className="text-2xl font-semibold tracking-tight">MediAgent intake</h1>
           </header>
 
@@ -114,19 +253,26 @@ function Page() {
             <div className="soft-card flex items-end gap-2 p-2">
               <textarea
                 value={draft}
+                disabled={loading || recording}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
                 }}
                 rows={1}
-                placeholder="Describe what's going on…"
+                placeholder={recording ? "Recording audio..." : "Describe what's going on…"}
                 className="flex-1 resize-none bg-transparent px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none"
               />
-              <Button size="icon" variant="ghost" className="rounded-full">
-                <Mic className="h-4 w-4" />
+              <Button 
+                size="icon" 
+                variant={recording ? "destructive" : "ghost"} 
+                className="rounded-full"
+                onClick={recording ? stopRecording : startRecording}
+                disabled={loading}
+              >
+                {recording ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
               </Button>
-              <Button size="icon" onClick={send} className="rounded-full" disabled={!draft.trim()}>
-                <Send className="h-4 w-4" />
+              <Button size="icon" onClick={send} className="rounded-full" disabled={!draft.trim() || loading || recording}>
+                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
               </Button>
             </div>
             <div className="flex items-center gap-1.5 mt-2 text-[11px] text-muted-foreground">
@@ -168,7 +314,7 @@ function Page() {
           {allDone && (
             <Link
               to="/patient/consultation/$id/report"
-              params={{ id }}
+              params={{ id: resolvedId }}
               className="soft-card ai-glow block p-5 hover:-translate-y-0.5 transition"
             >
               <div className="text-xs uppercase tracking-wider text-accent font-medium">Ready</div>
@@ -182,7 +328,7 @@ function Page() {
           <button
             onClick={() => {
               setSteps(initialSteps.map((s) => ({ ...s, state: "done" })));
-              setTimeout(() => nav({ to: "/patient/consultation/$id/report", params: { id } }), 200);
+              setTimeout(() => nav({ to: "/patient/consultation/$id/report", params: { id: resolvedId } }), 200);
             }}
             className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
           >
@@ -201,7 +347,7 @@ function Bubble({ from, text }: { from: "agent" | "patient"; text: string }) {
         <div className="grid h-7 w-7 place-items-center rounded-full bg-accent-soft text-accent shrink-0">
           <Sparkles className="h-3.5 w-3.5" />
         </div>
-        <div className="text-[15px] leading-relaxed max-w-[80%] text-foreground">{text}</div>
+        <div className="text-[15px] leading-relaxed max-w-[80%] text-foreground whitespace-pre-line">{text}</div>
       </div>
     );
   }
@@ -213,3 +359,4 @@ function Bubble({ from, text }: { from: "agent" | "patient"; text: string }) {
     </div>
   );
 }
+
