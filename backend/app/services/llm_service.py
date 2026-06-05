@@ -420,3 +420,60 @@ def translate_discharge_summary(english_instructions: str, target_language: str)
     Translates instructions to Hindi or Telugu using the Sarvam Translation API wrapper.
     """
     return sarvam_translate(english_instructions, "en-IN", target_language)
+
+def generate_session_summary(transcript_text: str, clinical_facts: dict) -> dict:
+    """
+    Generates a structured session summary from the doctor-patient consultation.
+    Returns a narrative overview plus structured sections: key_findings, action_items,
+    patient_instructions, and risk_flags.
+    """
+    symptoms_str = ", ".join(clinical_facts.get("symptoms", [])) or "Not recorded"
+    drugs_str = "; ".join(
+        f"{d.get('name', '')} {d.get('dosage', '')} {d.get('frequency', '')} for {d.get('duration', '')}"
+        for d in clinical_facts.get("prescribed_drugs", [])
+    ) or "None"
+
+    prompt = (
+        "You are an expert clinical documentation AI. Based on the following consultation transcript and extracted clinical facts, "
+        "generate a concise structured session summary.\n\n"
+        f"Transcript:\n\"\"\"\n{transcript_text}\n\"\"\"\n\n"
+        f"Extracted Clinical Facts:\n"
+        f"- Symptoms: {symptoms_str}\n"
+        f"- Provisional Diagnosis: {clinical_facts.get('diagnosis', 'Not established')}\n"
+        f"- ICD-10 Code: {clinical_facts.get('icd10_code', 'Not coded')}\n"
+        f"- Prescribed Medications: {drugs_str}\n\n"
+        "Generate a structured session summary. Respond ONLY with valid JSON (no markdown) with these exact keys:\n"
+        '{"overview": "2-3 sentence narrative summary", "key_findings": ["Finding 1", "Finding 2"], '
+        '"action_items": ["Action 1"], "patient_instructions": ["Instruction 1"], "risk_flags": []}'
+    )
+
+    if not use_live_gemini:
+        return {
+            "overview": f"Patient presented with {symptoms_str}. Provisional diagnosis: {clinical_facts.get('diagnosis', 'Undiagnosed')}. Medications prescribed as documented.",
+            "key_findings": [
+                f"Chief complaint: {symptoms_str}",
+                f"Diagnosis: {clinical_facts.get('diagnosis', 'Pending')}",
+                f"ICD-10: {clinical_facts.get('icd10_code', 'Pending')}"
+            ],
+            "action_items": ["Review prescribed medications with patient", "Schedule follow-up appointment"],
+            "patient_instructions": ["Take medications as directed", "Return if symptoms worsen", "Stay hydrated and rest"],
+            "risk_flags": []
+        }
+
+    try:
+        messages = [{"role": "user", "content": prompt}]
+        text = call_openrouter(messages)
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+            if text.startswith("json"):
+                text = text[4:].strip()
+        return json.loads(text)
+    except Exception as e:
+        print(f"[ERROR] generate_session_summary failed: {e}.")
+        return {
+            "overview": f"Consultation completed. Diagnosis: {clinical_facts.get('diagnosis', 'Pending')}.",
+            "key_findings": [symptoms_str],
+            "action_items": ["Review EHR and approve"],
+            "patient_instructions": ["Follow prescribed treatment plan"],
+            "risk_flags": []
+        }

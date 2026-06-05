@@ -2,6 +2,8 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getConsultationById } from "@/lib/mediagent/live";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Send, Mic, MicOff, Sparkles, Check, Loader2, ArrowRight, ShieldCheck } from "lucide-react";
 import { postIntake, postIntakeAudio, getPatientTimeline } from "@/lib/api/client";
@@ -41,6 +43,7 @@ function Page() {
   const { id } = Route.useParams();
   const search = Route.useSearch();
   const nav = useNavigate();
+  const { user } = useAuth();
   const { data } = useQuery({
     queryKey: ["patient-consultation", id],
     queryFn: async () => getConsultationById(id),
@@ -163,6 +166,26 @@ function Page() {
       localStorage.setItem(`mediagent_report_${resolvedId}`, JSON.stringify(res));
       localStorage.setItem(`mediagent_patient_id`, resolvedId);
 
+      // Persist intake output to Supabase so doctor can read it cross-browser
+      const now = new Date();
+      const dp = now.toISOString().slice(0, 10).replace(/-/g, "");
+      const tp = now.toTimeString().slice(0, 5).replace(":", "");
+      const np = (user?.full_name || user?.email?.split("@")[0] || "patient")
+        .toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+      const fallbackName = `${dp}_${tp}_${np}`;
+      supabase.from("consultations").update({
+        chief_complaint: res.primary_issue || res.english_symptoms || userText.slice(0, 500),
+        severity_score: typeof res.severity_score === "number" ? res.severity_score : 3,
+        intake_summary: JSON.stringify(res),
+        intake_original_transcript: res.original_transcript || userText,
+        intake_english_translation: res.english_symptoms || res.primary_issue || userText,
+        symptoms: JSON.stringify(res.symptoms ?? []),
+        status: res.is_intake_complete ? "waiting" : "drafting",
+        record_name: fallbackName,
+      }).eq("id", resolvedId).then(({ error }) => {
+        if (error) console.warn("[intake] Supabase update failed (non-blocking):", error.message);
+      });
+
       setMsgs((m) => [...m, { from: "agent", text: res.agent_response_translated }]);
 
       // Audio Speech playback (only in voice mode)
@@ -251,6 +274,25 @@ function Page() {
       // Save report details to localStorage
       localStorage.setItem(`mediagent_report_${resolvedId}`, JSON.stringify(res));
       localStorage.setItem(`mediagent_patient_id`, resolvedId);
+
+      // Persist intake output to Supabase so doctor can read it cross-browser
+      const now2 = new Date();
+      const dp2 = now2.toISOString().slice(0, 10).replace(/-/g, "");
+      const tp2 = now2.toTimeString().slice(0, 5).replace(":", "");
+      const np2 = (user?.full_name || user?.email?.split("@")[0] || "patient")
+        .toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+      supabase.from("consultations").update({
+        chief_complaint: res.primary_issue || res.english_symptoms || "Audio intake",
+        severity_score: typeof res.severity_score === "number" ? res.severity_score : 3,
+        intake_summary: JSON.stringify(res),
+        intake_original_transcript: res.original_transcript || "",
+        intake_english_translation: res.english_symptoms || res.primary_issue || "",
+        symptoms: JSON.stringify(res.symptoms ?? []),
+        status: res.is_intake_complete ? "waiting" : "drafting",
+        record_name: `${dp2}_${tp2}_${np2}`,
+      }).eq("id", resolvedId).then(({ error }) => {
+        if (error) console.warn("[intake-audio] Supabase update failed (non-blocking):", error.message);
+      });
 
       // Update patient's message bubble with transcript
       setMsgs((m) => {

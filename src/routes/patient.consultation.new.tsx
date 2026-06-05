@@ -24,12 +24,19 @@ function Page() {
   const startConsultation = useMutation({
     mutationFn: async () => {
       if (!user) {
-        // Not signed in — use local ID so the chat still opens
         return { id: `local-${Date.now()}` };
       }
+      // Generate a human-readable record name: YYYYMMDD_HHMM_username
+      const now = new Date();
+      const datePart = now.toISOString().slice(0, 10).replace(/-/g, "");
+      const timePart = now.toTimeString().slice(0, 5).replace(":", "");
+      const namePart = (user.full_name || user.email.split("@")[0])
+        .toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+      const record_name = `${datePart}_${timePart}_${namePart}`;
+
       const { data, error } = await supabase
         .from("consultations")
-        .insert({ patient_id: user.id, status: "drafting", severity_score: 3 })
+        .insert({ patient_id: user.id, status: "drafting", severity_score: 3, record_name })
         .select("id")
         .single();
       if (error) throw error;

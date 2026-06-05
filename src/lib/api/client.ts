@@ -121,3 +121,30 @@ export async function getPatientTimeline(patientId: string) {
   }
   return response.json();
 }
+
+
+export type SessionSummary = {
+  overview: string;
+  key_findings: string[];
+  action_items: string[];
+  patient_instructions: string[];
+  risk_flags: string[];
+};
+
+export async function getSessionSummary(
+  transcript: string,
+  clinicalFacts?: {
+    symptoms?: string[];
+    diagnosis?: string;
+    icd10_code?: string;
+    prescribed_drugs?: { name: string; dosage: string; frequency: string; duration: string }[];
+  }
+): Promise<SessionSummary> {
+  const response = await fetch(`${API_BASE_URL}/api/consult/session-summary`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ transcript, clinical_facts: clinicalFacts ?? {} }),
+  });
+  if (!response.ok) throw new Error(`Session summary failed: ${response.statusText}`);
+  return response.json();
+}

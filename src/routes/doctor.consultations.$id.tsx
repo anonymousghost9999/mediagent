@@ -14,9 +14,10 @@ import { IMReportForm, downloadReportAsPDF } from "@/components/mediagent/im-rep
 import { logAudit, treatmentStatuses, treatmentStatusLabel, type TreatmentStatus } from "@/lib/mediagent/store";
 import { getConsultationById } from "@/lib/mediagent/live";
 import type { IMReportData } from "@/lib/mediagent/im-report";
-import { startConsultation, transcribeConsultation, approveConsultation } from "@/lib/api/client";
+import { startConsultation, transcribeConsultation, approveConsultation, getSessionSummary, type SessionSummary } from "@/lib/api/client";
 import {
   AlertTriangle, Check, Pencil, X, ShieldCheck, Mic, MicOff, Save, Download, FileText, Loader2,
+  Activity, Brain, ListChecks, User, Flag, Stethoscope, ClipboardList, Clock, Pill,
 } from "lucide-react";
 import { toast } from "sonner";
 import type { ReviewStatus } from "@/lib/mediagent/data";
@@ -39,7 +40,6 @@ function Page() {
     fullName: data.profile.full_name ?? patient.fullName,
     mrn: data.profile.mrn ?? patient.mrn,
     age: data.profile.dob ? Math.max(0, new Date().getFullYear() - new Date(data.profile.dob).getFullYear()) : patient.age,
-    // Cast details to any — Supabase union type doesn't expose patient_details-specific columns directly
     gender: (data.details as any)?.gender ?? (data.profile as any)?.gender ?? patient.gender,
     bloodGroup: (data.profile as any)?.blood_group ?? (data.details as any)?.blood_group ?? patient.bloodGroup,
     bp: patient.bp,
@@ -48,6 +48,14 @@ function Page() {
     chronic: ((data.details as any)?.chronic_conditions as string[] | undefined) ?? patient.chronic,
     currentMeds: ((data.profile as any)?.current_meds as string[] | undefined) ?? patient.currentMeds,
   } : patient;
+
+  // Parse patient agent intake report from Supabase
+  const intakeSummaryRaw = (data?.consultation as any)?.intake_summary;
+  const intakeReport = (() => {
+    if (!intakeSummaryRaw) return null;
+    try { return JSON.parse(intakeSummaryRaw); } catch { return null; }
+  })();
+  const intakeAvailable = !!intakeReport;
 
   // AI review state
   const [fields, setFields] = useState(aiFields);
@@ -89,6 +97,8 @@ function Page() {
 
   const [liveConsultationOutput, setLiveConsultationOutput] = useState<any>(null);
   const [liveSafetyAlerts, setLiveSafetyAlerts] = useState<any[]>([]);
+  const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -242,6 +252,21 @@ function Page() {
         return f;
       }));
 
+      // Fetch session summary from agent in background
+      const fullTranscript = res.raw_transcript || res.english_transcript || transcript.join("\n");
+      setSummaryLoading(true);
+      getSessionSummary(fullTranscript, {
+        symptoms: res.symptoms,
+        diagnosis: res.diagnosis,
+        icd10_code: res.icd10_code,
+        prescribed_drugs: res.prescribed_drugs,
+      }).then((s) => {
+        setSessionSummary(s);
+        toast.info("Session summary ready", { description: "AI has generated a structured summary below the transcript." });
+      }).catch((err) => {
+        console.error("Session summary failed:", err);
+      }).finally(() => setSummaryLoading(false));
+
     } catch (err) {
       console.error(err);
       toast.error("Failed to transcribe dialogue. Using mockup fallbacks.", { id: toastId });
@@ -393,6 +418,25 @@ function Page() {
           </div>
           <div className="flex items-center gap-2">
             <StatusPill status="CONSULTATION_ACTIVE" />
+            {/* Live recording status indicator */}
+            {recording && (
+              <div className="flex items-center gap-1.5 text-xs font-mono text-destructive bg-destructive/10 border border-destructive/30 px-2 py-1 rounded-full animate-pulse">
+                <span className="h-1.5 w-1.5 rounded-full bg-destructive inline-block" />
+                LIVE · Agent Listening
+              </div>
+            )}
+            {transcribing && (
+              <div className="flex items-center gap-1.5 text-xs font-mono text-accent bg-accent/10 border border-accent/30 px-2 py-1 rounded-full">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                Processing…
+              </div>
+            )}
+            {summaryLoading && (
+              <div className="flex items-center gap-1.5 text-xs font-mono text-muted-foreground bg-muted px-2 py-1 rounded-full">
+                <Brain className="h-3 w-3 animate-pulse" />
+                Summarising…
+              </div>
+            )}
             <Button
               size="sm"
               variant={recording ? "destructive" : "default"}
@@ -433,6 +477,112 @@ function Page() {
               </div>
             </div>
           </div>
+        </Card>
+
+        {/* Patient Agent Report */}
+        <Card className={intakeAvailable ? "border-primary/20 bg-primary/5" : "border-dashed"}>
+          <CardHeader className="flex flex-row items-center gap-2 pb-2">
+            <ClipboardList className="h-4 w-4 text-primary" />
+            <CardTitle className="text-base">Patient Agent Report</CardTitle>
+            {!intakeAvailable && (
+              <span className="ml-auto text-[10px] font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded">
+                Awaiting intake
+              </span>
+            )}
+          </CardHeader>
+          <CardContent>
+            {!intakeAvailable ? (
+              <p className="text-sm text-muted-foreground italic">
+                The patient has not completed their intake yet. This panel will populate automatically once they submit symptoms via the patient portal.
+              </p>
+            ) : (
+              <div className="space-y-4 text-sm">
+                <div className="flex flex-wrap gap-3">
+                  <div className="bg-background border rounded p-2 min-w-[130px]">
+                    <div className="text-[10px] uppercase font-mono text-muted-foreground">ESI Severity</div>
+                    <div className={`text-lg font-bold ${intakeReport.severity_score <= 2 ? "text-destructive" : intakeReport.severity_score === 3 ? "text-orange-500" : "text-green-600"}`}>
+                      {intakeReport.severity_score ?? "\u2014"} / 5
+                    </div>
+                  </div>
+                  <div className="bg-background border rounded p-2 flex-1 min-w-[200px]">
+                    <div className="text-[10px] uppercase font-mono text-muted-foreground">Chief Complaint</div>
+                    <div className="font-medium">{intakeReport.primary_issue || (data?.consultation as any)?.chief_complaint || "Not captured"}</div>
+                  </div>
+                  {intakeReport.organ_system && (
+                    <div className="bg-background border rounded p-2 min-w-[120px]">
+                      <div className="text-[10px] uppercase font-mono text-muted-foreground">Organ System</div>
+                      <div className="font-medium">{intakeReport.organ_system}</div>
+                    </div>
+                  )}
+                </div>
+                {(intakeReport.english_symptoms || (intakeReport.symptoms ?? []).length > 0) && (
+                  <div>
+                    <div className="flex items-center gap-1.5 text-[10px] uppercase font-mono tracking-wider text-muted-foreground mb-1">
+                      <Activity className="h-3 w-3" />Reported Symptoms
+                    </div>
+                    <p className="text-sm">{intakeReport.english_symptoms || (intakeReport.symptoms ?? []).join(", ")}</p>
+                    {intakeReport.duration && (
+                      <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1">
+                        <Clock className="h-3 w-3" />Duration: {intakeReport.duration}
+                      </p>
+                    )}
+                  </div>
+                )}
+                {intakeReport.differential_diagnoses?.length > 0 && (
+                  <div>
+                    <div className="flex items-center gap-1.5 text-[10px] uppercase font-mono tracking-wider text-muted-foreground mb-1">
+                      <Stethoscope className="h-3 w-3" />Differential Diagnoses (AI)
+                    </div>
+                    <div className="space-y-1">
+                      {intakeReport.differential_diagnoses.slice(0, 4).map((dx: any, i: number) => (
+                        <div key={i} className="flex items-start gap-2 text-xs">
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono shrink-0 ${dx.probability?.toLowerCase() === "high" ? "bg-destructive/15 text-destructive" : dx.probability?.toLowerCase() === "medium" ? "bg-orange-100 text-orange-700" : "bg-muted text-muted-foreground"}`}>
+                            {dx.probability ?? "?"}
+                          </span>
+                          <div>
+                            <span className="font-medium">{dx.condition}</span>
+                            {dx.rationale && <span className="text-muted-foreground"> &mdash; {dx.rationale}</span>}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {intakeReport.triage_rationale && (
+                  <div>
+                    <div className="text-[10px] uppercase font-mono tracking-wider text-muted-foreground mb-1">Triage Rationale</div>
+                    <p className="text-xs text-muted-foreground">{intakeReport.triage_rationale}</p>
+                  </div>
+                )}
+                <div className="grid grid-cols-3 gap-2 text-xs">
+                  {intakeReport.allergies && (
+                    <div className="bg-destructive/10 rounded p-2">
+                      <div className="text-[10px] uppercase font-mono text-muted-foreground">Allergies (Reported)</div>
+                      <div className="font-medium text-destructive">{intakeReport.allergies}</div>
+                    </div>
+                  )}
+                  {intakeReport.chronic_diseases && (
+                    <div className="bg-background border rounded p-2">
+                      <div className="text-[10px] uppercase font-mono text-muted-foreground">Chronic</div>
+                      <div className="font-medium">{intakeReport.chronic_diseases}</div>
+                    </div>
+                  )}
+                  {intakeReport.previous_medication && (
+                    <div className="bg-background border rounded p-2">
+                      <div className="text-[10px] uppercase font-mono text-muted-foreground flex items-center gap-1"><Pill className="h-3 w-3" />Prior Meds</div>
+                      <div className="font-medium">{intakeReport.previous_medication}</div>
+                    </div>
+                  )}
+                </div>
+                {(data?.consultation as any)?.intake_original_transcript && (
+                  <details>
+                    <summary className="cursor-pointer text-[10px] uppercase font-mono text-muted-foreground hover:text-foreground">&rsaquo; Patient&apos;s original words</summary>
+                    <p className="mt-1 text-xs bg-muted rounded p-2 italic">{(data?.consultation as any)?.intake_original_transcript}</p>
+                  </details>
+                )}
+              </div>
+            )}
+          </CardContent>
         </Card>
 
         {/* Pre-consultation (editable) */}
@@ -508,6 +658,86 @@ function Page() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Session Summary (populated after transcription) */}
+        {(sessionSummary || summaryLoading) && (
+          <Card className="border-accent/30 bg-accent/5">
+            <CardHeader className="flex flex-row items-center gap-2 pb-2">
+              <Brain className="h-4 w-4 text-accent" />
+              <CardTitle className="text-base">Agent Session Summary</CardTitle>
+              {summaryLoading && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground ml-auto" />}
+            </CardHeader>
+            {sessionSummary && (
+              <CardContent className="space-y-4 text-sm">
+                {/* Overview */}
+                <div>
+                  <div className="text-[10px] uppercase font-mono tracking-wider text-muted-foreground mb-1">Overview</div>
+                  <p className="text-sm text-foreground leading-relaxed">{sessionSummary.overview}</p>
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  {/* Key Findings */}
+                  <div>
+                    <div className="flex items-center gap-1.5 text-[10px] uppercase font-mono tracking-wider text-muted-foreground mb-1">
+                      <Activity className="h-3 w-3" />Key Findings
+                    </div>
+                    <ul className="space-y-1">
+                      {sessionSummary.key_findings.map((f, i) => (
+                        <li key={i} className="flex items-start gap-1.5 text-xs">
+                          <Check className="h-3 w-3 mt-0.5 text-accent shrink-0" />{f}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  {/* Action Items */}
+                  <div>
+                    <div className="flex items-center gap-1.5 text-[10px] uppercase font-mono tracking-wider text-muted-foreground mb-1">
+                      <ListChecks className="h-3 w-3" />Action Items
+                    </div>
+                    <ul className="space-y-1">
+                      {sessionSummary.action_items.map((a, i) => (
+                        <li key={i} className="flex items-start gap-1.5 text-xs">
+                          <span className="h-1.5 w-1.5 rounded-full bg-primary mt-1.5 shrink-0" />{a}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+
+                {/* Patient Instructions */}
+                <div>
+                  <div className="flex items-center gap-1.5 text-[10px] uppercase font-mono tracking-wider text-muted-foreground mb-1">
+                    <User className="h-3 w-3" />Patient Instructions
+                  </div>
+                  <ul className="space-y-1">
+                    {sessionSummary.patient_instructions.map((p, i) => (
+                      <li key={i} className="flex items-start gap-1.5 text-xs">
+                        <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground mt-1.5 shrink-0" />{p}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
+                {/* Risk Flags */}
+                {sessionSummary.risk_flags.length > 0 && (
+                  <div className="rounded-md bg-destructive/10 border border-destructive/30 p-3">
+                    <div className="flex items-center gap-1.5 text-[10px] uppercase font-mono tracking-wider text-destructive mb-1">
+                      <Flag className="h-3 w-3" />Risk Flags
+                    </div>
+                    <ul className="space-y-1">
+                      {sessionSummary.risk_flags.map((r, i) => (
+                        <li key={i} className="flex items-start gap-1.5 text-xs text-destructive">
+                          <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />{r}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </CardContent>
+            )}
+          </Card>
+        )}
 
         {/* Doctor analysis + IM report tabs */}
         <Tabs defaultValue="analysis">
