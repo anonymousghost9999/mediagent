@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth, persistSession, roleHome, type AppRole } from "@/hooks/use-auth";
+import { useAuth, roleHome, type AppRole } from "@/hooks/use-auth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,7 +18,7 @@ export const Route = createFileRoute("/auth")({
 
 function AuthPage() {
   const navigate = useNavigate();
-  const { session, role, loading } = useAuth();
+  const { session, role, loading, login } = useAuth();
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -53,9 +53,9 @@ function AuthPage() {
       // Plain string comparison — no hashing
       if (profile.password !== password) throw new Error("Incorrect password");
 
-      const user = persistSession(profile);
-      navigate({ to: roleHome(user.role), replace: true });
+      const user = login(profile);
       toast.success(`Welcome back, ${user.full_name || user.email}`);
+      navigate({ to: roleHome(user.role), replace: true });
     } catch (err: any) {
       toast.error("Sign in failed", { description: err.message || String(err) });
     } finally {
@@ -100,7 +100,7 @@ function AuthPage() {
       if (error) throw error;
       if (!rows) throw new Error("Failed to create account");
 
-      const user = persistSession(rows);
+      const user = login(rows);
       toast.success("Account created!");
       navigate({ to: roleHome(user.role), replace: true });
     } catch (err: any) {
@@ -134,11 +134,11 @@ function AuthPage() {
               <form onSubmit={onSignIn} className="space-y-4 pt-4">
                 <div className="space-y-1.5">
                   <Label htmlFor="si-email">Email</Label>
-                  <Input id="si-email" name="email" type="text" autoComplete="email" />
+                  <Input id="si-email" name="email" type="text" autoComplete="email" suppressHydrationWarning />
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="si-password">Password</Label>
-                  <Input id="si-password" name="password" type="password" autoComplete="current-password" />
+                  <Input id="si-password" name="password" type="password" autoComplete="current-password" suppressHydrationWarning />
                 </div>
                 <Button type="submit" className="w-full" disabled={busy}>
                   {busy && <Loader2 className="h-4 w-4 animate-spin mr-2" />}Sign in

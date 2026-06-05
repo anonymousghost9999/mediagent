@@ -18,6 +18,8 @@ type AuthCtx = {
   user: AppUser | null;
   role: AppRole | null;
   loading: boolean;
+  /** Call this after a successful sign-in/sign-up to update context + localStorage. */
+  login: (profile: { id: string; email: string; full_name: string; role?: string | null }) => AppUser;
   signOut: () => void;
 };
 
@@ -25,8 +27,22 @@ const SESSION_KEY = "mediagent_session";
 
 const Ctx = createContext<AuthCtx>({
   session: null, user: null, role: null, loading: true,
+  login: () => { throw new Error("AuthProvider not mounted"); },
   signOut: () => {},
 });
+
+function buildAppUser(profile: { id: string; email: string; full_name: string; role?: string | null }): AppUser {
+  const role = (["patient", "doctor", "admin"].includes(profile.role ?? "")
+    ? profile.role
+    : "patient") as AppRole;
+  return {
+    id: profile.id,
+    email: profile.email,
+    full_name: profile.full_name,
+    role,
+    user_metadata: { role, full_name: profile.full_name },
+  };
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AppUser | null>(null);
@@ -40,6 +56,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setLoading(false);
   }, []);
 
+  const login = (profile: { id: string; email: string; full_name: string; role?: string | null }): AppUser => {
+    const appUser = buildAppUser(profile);
+    localStorage.setItem(SESSION_KEY, JSON.stringify(appUser));
+    setUser(appUser);   // <-- this is the key: update React state immediately
+    return appUser;
+  };
+
   const signOut = () => {
     localStorage.removeItem(SESSION_KEY);
     setUser(null);
@@ -47,7 +70,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <Ctx.Provider value={{ session: user, user, role: user?.role ?? null, loading, signOut }}>
+    <Ctx.Provider value={{ session: user, user, role: user?.role ?? null, loading, login, signOut }}>
       {children}
     </Ctx.Provider>
   );
@@ -55,29 +78,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
 export const useAuth = () => useContext(Ctx);
 
-/**
- * Persist a profile row as the current session.
- * Call this after a successful sign-in or sign-up.
- */
-export function persistSession(profile: {
-  id: string;
-  email: string;
-  full_name: string;
-  role?: string | null;
-}): AppUser {
-  const role = (["patient", "doctor", "admin"].includes(profile.role ?? "")
-    ? profile.role
-    : "patient") as AppRole;
-
-  const appUser: AppUser = {
-    id: profile.id,
-    email: profile.email,
-    full_name: profile.full_name,
-    role,
-    user_metadata: { role, full_name: profile.full_name },
-  };
-  localStorage.setItem(SESSION_KEY, JSON.stringify(appUser));
-  return appUser;
+/** Legacy helper kept for any call sites that used it directly. Now just a passthrough. */
+export function persistSession(profile: { id: string; email: string; full_name: string; role?: string | null }): AppUser {
+  return buildAppUser(profile);
 }
 
 export const roleHome = (r: AppRole | null) =>
