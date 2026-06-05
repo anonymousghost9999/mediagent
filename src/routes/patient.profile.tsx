@@ -1,14 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { z } from "zod";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
+import { useStore, profileStore } from "@/lib/mediagent/store";
 import { Pencil, Save, X, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -26,7 +25,6 @@ const schema = z.object({
   weight_kg: z.coerce.number().min(0).max(400).optional().or(z.literal("" as unknown as number)),
   allergies: z.string().trim().max(500).optional().or(z.literal("")),
   chronic_conditions: z.string().trim().max(500).optional().or(z.literal("")),
-  current_meds: z.string().trim().max(500).optional().or(z.literal("")),
   emergency_contact: z.string().trim().max(255).optional().or(z.literal("")),
   insurance_provider: z.string().trim().max(120).optional().or(z.literal("")),
   insurance_number: z.string().trim().max(64).optional().or(z.literal("")),
@@ -46,83 +44,73 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
 
 function Page() {
   const { user } = useAuth();
-  const qc = useQueryClient();
-
-  const { data: profile, isLoading } = useQuery({
-    queryKey: ["profile", user?.id],
-    enabled: !!user,
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("profiles").select("*").eq("id", user!.id).maybeSingle();
-      if (error) throw error;
-      return data;
-    },
-  });
+  const profile = useStore(profileStore);
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (profile) {
       setDraft({
-        full_name: profile.full_name ?? "",
+        full_name: profile.fullName ?? "",
         email: profile.email ?? user?.email ?? "",
         mobile: profile.mobile ?? "",
         dob: profile.dob ?? "",
         gender: profile.gender ?? "",
         address: profile.address ?? "",
-        blood_group: profile.blood_group ?? "",
-        height_cm: profile.height_cm?.toString() ?? "",
-        weight_kg: profile.weight_kg?.toString() ?? "",
+        blood_group: profile.bloodGroup ?? "",
+        height_cm: profile.heightCm?.toString() ?? "",
+        weight_kg: profile.weightKg?.toString() ?? "",
         allergies: csv(profile.allergies),
-        chronic_conditions: csv(profile.chronic_conditions),
-        current_meds: csv(profile.current_meds),
-        emergency_contact: profile.emergency_contact ?? "",
-        insurance_provider: profile.insurance_provider ?? "",
-        insurance_number: profile.insurance_number ?? "",
+        chronic_conditions: csv(profile.chronic),
+        emergency_contact: profile.emergency ?? "",
+        insurance_provider: profile.insurance ?? "",
+        insurance_number: profile.insuranceNumber ?? "",
       });
     }
   }, [profile, user]);
 
-  const save = useMutation({
-    mutationFn: async () => {
+  const handleSave = () => {
+    try {
+      setSaving(true);
       const parsed = schema.safeParse(draft);
       if (!parsed.success) throw new Error(parsed.error.issues[0].message);
       const d = parsed.data;
-      const payload = {
-        full_name: d.full_name,
+
+      profileStore.set((prev) => ({
+        ...prev,
+        fullName: d.full_name,
         email: d.email,
-        mobile: d.mobile || null,
-        dob: d.dob || null,
-        gender: d.gender || null,
-        address: d.address || null,
-        blood_group: d.blood_group || null,
-        height_cm: d.height_cm ? Number(d.height_cm) : null,
-        weight_kg: d.weight_kg ? Number(d.weight_kg) : null,
+        mobile: d.mobile || "",
+        dob: d.dob || "",
+        gender: d.gender || "",
+        address: d.address || "",
+        bloodGroup: d.blood_group || "",
+        heightCm: d.height_cm ? Number(d.height_cm) : 0,
+        weightKg: d.weight_kg ? Number(d.weight_kg) : 0,
         allergies: split(d.allergies),
-        chronic_conditions: split(d.chronic_conditions),
-        current_meds: split(d.current_meds),
-        emergency_contact: d.emergency_contact || null,
-        insurance_provider: d.insurance_provider || null,
-        insurance_number: d.insurance_number || null,
-      };
-      const { error } = await supabase.from("profiles").update(payload).eq("id", user!.id);
-      if (error) throw error;
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["profile", user?.id] });
+        chronic: split(d.chronic_conditions),
+        emergency: d.emergency_contact || "",
+        insurance: d.insurance_provider || "",
+        insuranceNumber: d.insurance_number || "",
+      }));
+
       setEditing(false);
       toast.success("Profile updated");
-    },
-    onError: (e: Error) => toast.error("Could not save", { description: e.message }),
-  });
+    } catch (e: any) {
+      toast.error("Could not save", { description: e.message });
+    } finally {
+      setSaving(false);
+    }
+  };
 
-  if (isLoading || !profile) {
+  if (!profile) {
     return <div className="p-6 flex items-center gap-2 text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />Loading profile…</div>;
   }
 
-  const bmi = profile.height_cm && profile.weight_kg
-    ? Math.round((Number(profile.weight_kg) / Math.pow(Number(profile.height_cm) / 100, 2)) * 10) / 10
+  const bmi = profile.heightCm && profile.weightKg
+    ? Math.round((Number(profile.weightKg) / Math.pow(Number(profile.heightCm) / 100, 2)) * 10) / 10
     : null;
 
   const F = ({ name, label, type = "text", textarea = false }: { name: string; label: string; type?: string; textarea?: boolean }) => (
@@ -141,15 +129,15 @@ function Page() {
       <header className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <div className="text-xs font-mono uppercase tracking-widest text-muted-foreground">Patient · Profile</div>
-          <h1 className="text-2xl font-semibold">{profile.full_name || "Unnamed patient"}</h1>
+          <h1 className="text-2xl font-semibold">{profile.fullName || "Unnamed patient"}</h1>
           <p className="text-xs text-muted-foreground font-mono">MRN {profile.mrn}</p>
         </div>
         {!editing ? (
           <Button onClick={() => setEditing(true)}><Pencil className="h-4 w-4 mr-1.5" />Edit profile</Button>
         ) : (
           <div className="flex gap-2">
-            <Button onClick={() => save.mutate()} disabled={save.isPending}>
-              {save.isPending ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Save className="h-4 w-4 mr-1.5" />}Save
+            <Button onClick={handleSave} disabled={saving}>
+              {saving ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Save className="h-4 w-4 mr-1.5" />}Save
             </Button>
             <Button variant="ghost" onClick={() => setEditing(false)}><X className="h-4 w-4 mr-1.5" />Cancel</Button>
           </div>
@@ -159,7 +147,7 @@ function Page() {
       {!editing ? (
         <div className="grid gap-4 md:grid-cols-3">
           <Card><CardHeader><CardTitle>Identity</CardTitle></CardHeader><CardContent>
-            <Row label="Full name" value={profile.full_name} />
+            <Row label="Full name" value={profile.fullName} />
             <Row label="Email" value={profile.email} />
             <Row label="Mobile" value={profile.mobile} />
             <Row label="DOB" value={profile.dob} />
@@ -167,17 +155,16 @@ function Page() {
             <Row label="Address" value={profile.address} />
           </CardContent></Card>
           <Card><CardHeader><CardTitle>Vitals</CardTitle></CardHeader><CardContent>
-            <Row label="Blood group" value={profile.blood_group} />
-            <Row label="Height" value={profile.height_cm ? `${profile.height_cm} cm` : "—"} />
-            <Row label="Weight" value={profile.weight_kg ? `${profile.weight_kg} kg` : "—"} />
+            <Row label="Blood group" value={profile.bloodGroup} />
+            <Row label="Height" value={profile.heightCm ? `${profile.heightCm} cm` : "—"} />
+            <Row label="Weight" value={profile.weightKg ? `${profile.weightKg} kg` : "—"} />
             <Row label="BMI" value={bmi ?? "—"} />
           </CardContent></Card>
           <Card><CardHeader><CardTitle>Clinical</CardTitle></CardHeader><CardContent>
             <Row label="Allergies" value={csv(profile.allergies)} />
-            <Row label="Chronic" value={csv(profile.chronic_conditions)} />
-            <Row label="Current meds" value={csv(profile.current_meds)} />
-            <Row label="Emergency" value={profile.emergency_contact} />
-            <Row label="Insurance" value={[profile.insurance_provider, profile.insurance_number].filter(Boolean).join(" · ")} />
+            <Row label="Chronic" value={csv(profile.chronic)} />
+            <Row label="Emergency" value={profile.emergency} />
+            <Row label="Insurance" value={[profile.insurance, profile.insuranceNumber].filter(Boolean).join(" · ")} />
           </CardContent></Card>
         </div>
       ) : (
@@ -198,7 +185,6 @@ function Page() {
           <Card><CardHeader><CardTitle>Clinical</CardTitle></CardHeader><CardContent className="space-y-3">
             <F name="allergies" label="Allergies (comma-separated)" textarea />
             <F name="chronic_conditions" label="Chronic conditions (comma-separated)" textarea />
-            <F name="current_meds" label="Current meds (comma-separated)" textarea />
             <F name="emergency_contact" label="Emergency contact" />
             <F name="insurance_provider" label="Insurance provider" />
             <F name="insurance_number" label="Insurance number" />
