@@ -1,123 +1,84 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import type { Session, User } from "@supabase/supabase-js";
-import { supabase } from "@/integrations/supabase/client";
 
 export type AppRole = "patient" | "doctor" | "admin";
 
+/** The shape stored in localStorage and exposed via context. */
+export type AppUser = {
+  id: string;
+  email: string;
+  full_name: string;
+  role: AppRole;
+  /** Compatibility shim so existing components can read user.user_metadata.role */
+  user_metadata: { role: AppRole; full_name: string };
+};
+
 type AuthCtx = {
-  session: Session | null;
-  user: User | null;
+  /** Non-null when the user is logged in (mirrors Supabase session shape). */
+  session: AppUser | null;
+  user: AppUser | null;
   role: AppRole | null;
   loading: boolean;
-  signOut: () => Promise<void>;
-  signInDummy: (email: string, role: AppRole) => void;
+  signOut: () => void;
 };
+
+const SESSION_KEY = "mediagent_session";
 
 const Ctx = createContext<AuthCtx>({
   session: null, user: null, role: null, loading: true,
-  signOut: async () => {},
-  signInDummy: () => {},
+  signOut: () => {},
 });
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [session, setSession] = useState<Session | null>(null);
-  const [role, setRole] = useState<AppRole | null>(null);
+  const [user, setUser] = useState<AppUser | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const roleFromUser = (user?: User | null) => {
-    const rawRole = user?.user_metadata?.role;
-    return rawRole === "doctor" || rawRole === "admin" || rawRole === "patient" ? rawRole : null;
-  };
-
   useEffect(() => {
-    const dummy = localStorage.getItem("mediagent_dummy_session");
-    if (dummy) {
-      try {
-        const parsed = JSON.parse(dummy);
-        setSession(parsed.session);
-        setRole(parsed.role);
-        setLoading(false);
-        return;
-      } catch (e) {
-        localStorage.removeItem("mediagent_dummy_session");
-      }
-    }
-
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
-      if (localStorage.getItem("mediagent_dummy_session")) return;
-      setSession(s);
-      if (s?.user) {
-        // defer DB call to avoid auth lock
-        setTimeout(() => loadRole(s.user), 0);
-      } else {
-        setRole(null);
-      }
-    });
-    supabase.auth.getSession().then(({ data }) => {
-      if (localStorage.getItem("mediagent_dummy_session")) return;
-      setSession(data.session);
-      if (data.session?.user) loadRole(data.session.user);
-      else setLoading(false);
-    });
-    return () => sub.subscription.unsubscribe();
+    try {
+      const raw = localStorage.getItem(SESSION_KEY);
+      if (raw) setUser(JSON.parse(raw) as AppUser);
+    } catch {}
+    setLoading(false);
   }, []);
 
-  const loadRole = async (user: User) => {
-    const metadataRole = roleFromUser(user);
-    if (metadataRole) {
-      setRole(metadataRole);
-      setLoading(false);
-      return;
-    }
-    const { data } = await supabase
-      .from("user_roles")
-      .select("role")
-      .eq("user_id", user.id)
-      .limit(1)
-      .maybeSingle();
-    setRole((data?.role as AppRole) ?? null);
-    setLoading(false);
-  };
-
-  const signInDummy = (email: string, chosenRole: AppRole) => {
-    const dummyUser: User = {
-      id: "dummy-user-id",
-      email: email || "demo@mediagent.com",
-      user_metadata: { role: chosenRole, full_name: "Demo User" },
-      app_metadata: {},
-      aud: "authenticated",
-      created_at: new Date().toISOString(),
-    } as any;
-
-    const dummySession: Session = {
-      access_token: "dummy-token",
-      token_type: "bearer",
-      expires_in: 3600,
-      refresh_token: "dummy-refresh-token",
-      user: dummyUser,
-    };
-
-    localStorage.setItem("mediagent_dummy_session", JSON.stringify({ session: dummySession, role: chosenRole }));
-    setSession(dummySession);
-    setRole(chosenRole);
-    setLoading(false);
-  };
-
-  const signOut = async () => {
-    localStorage.removeItem("mediagent_dummy_session");
-    await supabase.auth.signOut().catch(() => {});
-    setSession(null);
-    setRole(null);
+  const signOut = () => {
+    localStorage.removeItem(SESSION_KEY);
+    setUser(null);
+    window.location.href = "/auth";
   };
 
   return (
-    <Ctx.Provider value={{ session, user: session?.user ?? null, role, loading, signOut, signInDummy }}>
+    <Ctx.Provider value={{ session: user, user, role: user?.role ?? null, loading, signOut }}>
       {children}
     </Ctx.Provider>
   );
 }
 
 export const useAuth = () => useContext(Ctx);
+
+/**
+ * Persist a profile row as the current session.
+ * Call this after a successful sign-in or sign-up.
+ */
+export function persistSession(profile: {
+  id: string;
+  email: string;
+  full_name: string;
+  role?: string | null;
+}): AppUser {
+  const role = (["patient", "doctor", "admin"].includes(profile.role ?? "")
+    ? profile.role
+    : "patient") as AppRole;
+
+  const appUser: AppUser = {
+    id: profile.id,
+    email: profile.email,
+    full_name: profile.full_name,
+    role,
+    user_metadata: { role, full_name: profile.full_name },
+  };
+  localStorage.setItem(SESSION_KEY, JSON.stringify(appUser));
+  return appUser;
+}
 
 export const roleHome = (r: AppRole | null) =>
   r === "doctor" ? "/doctor/dashboard"

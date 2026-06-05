@@ -1,8 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { z } from "zod";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth, roleHome, type AppRole } from "@/hooks/use-auth";
+import { useAuth, persistSession, roleHome, type AppRole } from "@/hooks/use-auth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,23 +16,10 @@ export const Route = createFileRoute("/auth")({
   component: AuthPage,
 });
 
-const signUpSchema = z.object({
-  fullName: z.string().trim().max(120),
-  email: z.string().trim().min(1),
-  password: z.string().min(1),
-  role: z.enum(["patient", "doctor", "admin"]),
-});
-
-const signInSchema = z.object({
-  email: z.string().trim().min(1),
-  password: z.string().min(1),
-});
-
 function AuthPage() {
   const navigate = useNavigate();
-  const { session, role, loading, signInDummy } = useAuth();
+  const { session, role, loading } = useAuth();
   const [busy, setBusy] = useState(false);
-  const [signInAs, setSignInAs] = useState<AppRole>("patient");
 
   useEffect(() => {
     if (!loading && session && role) {
@@ -41,85 +27,88 @@ function AuthPage() {
     }
   }, [session, role, loading, navigate]);
 
+  /* ─── Sign in ─────────────────────────────────────────────────── */
   const onSignIn = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
-    const email = fd.get("email") as string;
+    const email = (fd.get("email") as string).trim();
     const password = fd.get("password") as string;
-    const parsed = signInSchema.safeParse({ email, password });
-    if (!parsed.success) return toast.error(parsed.error.issues[0].message);
+
+    if (!email || !password) return toast.error("Email and password are required");
     setBusy(true);
-    
+
     try {
-      const { data, error } = await supabase.auth.signInWithPassword(parsed.data);
-      if (error || !data.user) {
-        console.warn("Supabase auth failed, using demo bypass:", error?.message);
-        signInDummy(email, signInAs);
-        setBusy(false);
-        toast.success(`Bypassed auth: Welcome back, ${signInAs} (Demo)`);
-        navigate({ to: roleHome(signInAs), replace: true });
-        return;
-      }
-      await supabase.auth.updateUser({ data: { role: signInAs } });
+      // Fetch the profile row by email
+      const { data: rows, error } = await supabase
+        .from("profiles")
+        .select("id, full_name, email, password, role")
+        .eq("email", email)
+        .limit(1);
+
+      if (error) throw error;
+
+      const profile = rows?.[0];
+      if (!profile) throw new Error("No account found with that email");
+
+      // Plain string comparison — no hashing
+      if (profile.password !== password) throw new Error("Incorrect password");
+
+      const user = persistSession(profile);
+      navigate({ to: roleHome(user.role), replace: true });
+      toast.success(`Welcome back, ${user.full_name || user.email}`);
+    } catch (err: any) {
+      toast.error("Sign in failed", { description: err.message || String(err) });
+    } finally {
       setBusy(false);
-      toast.success(`Welcome back, ${signInAs}`);
-      navigate({ to: roleHome(signInAs), replace: true });
-    } catch (err) {
-      signInDummy(email, signInAs);
-      setBusy(false);
-      toast.success(`Bypassed auth: Welcome back, ${signInAs} (Demo)`);
-      navigate({ to: roleHome(signInAs), replace: true });
     }
   };
 
+  /* ─── Sign up ─────────────────────────────────────────────────── */
   const onSignUp = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
-    const fullName = fd.get("fullName") as string;
-    const email = fd.get("email") as string;
+    const fullName = (fd.get("fullName") as string).trim();
+    const email = (fd.get("email") as string).trim();
     const password = fd.get("password") as string;
-    const chosenRole = fd.get("role") as AppRole;
-    const parsed = signUpSchema.safeParse({
-      fullName,
-      email,
-      password,
-      role: chosenRole,
-    });
-    if (!parsed.success) return toast.error(parsed.error.issues[0].message);
+    const role = (fd.get("role") as string) || "patient";
+
+    if (!email || !password) return toast.error("Email and password are required");
     setBusy(true);
-    
+
     try {
-      const { error } = await supabase.auth.signUp({
-        email: parsed.data.email,
-        password: parsed.data.password,
-        options: {
-          emailRedirectTo: `${window.location.origin}/`,
-          data: { full_name: parsed.data.fullName || "Demo User", role: parsed.data.role },
-        },
-      });
-      if (error) {
-        console.warn("Supabase signup failed, using demo bypass:", error.message);
-        signInDummy(email, chosenRole);
-        setBusy(false);
-        toast.success(`Bypassed auth: Welcome back, ${chosenRole} (Demo)`);
-        navigate({ to: roleHome(chosenRole), replace: true });
-        return;
-      }
+      // Check if email already taken
+      const { data: existing } = await supabase
+        .from("profiles")
+        .select("id")
+        .eq("email", email)
+        .limit(1);
+
+      if (existing && existing.length > 0) throw new Error("An account with that email already exists");
+
+      // Insert new profile — password stored as plain text
+      const { data: rows, error } = await supabase
+        .from("profiles")
+        .insert({
+          full_name: fullName || email.split("@")[0],
+          email,
+          password,
+          role,
+        })
+        .select("id, full_name, email, role")
+        .single();
+
+      if (error) throw error;
+      if (!rows) throw new Error("Failed to create account");
+
+      const user = persistSession(rows);
+      toast.success("Account created!");
+      navigate({ to: roleHome(user.role), replace: true });
+    } catch (err: any) {
+      toast.error("Sign up failed", { description: err.message || String(err) });
+    } finally {
       setBusy(false);
-      toast.success("Account created", { description: "You can sign in now." });
-    } catch (err) {
-      signInDummy(email, chosenRole);
-      setBusy(false);
-      toast.success(`Bypassed auth: Welcome back, ${chosenRole} (Demo)`);
-      navigate({ to: roleHome(chosenRole), replace: true });
     }
   };
-
-  const roleOptions: { value: AppRole; label: string; icon: typeof UserRound }[] = [
-    { value: "patient", label: "Patient", icon: UserRound },
-    { value: "doctor", label: "Doctor", icon: Stethoscope },
-    { value: "admin", label: "Admin", icon: Shield },
-  ];
 
   return (
     <div className="min-h-screen grid place-items-center bg-background px-4 py-10">
@@ -140,60 +129,37 @@ function AuthPage() {
               <TabsTrigger value="signup">Create account</TabsTrigger>
             </TabsList>
 
+            {/* ── Sign In ── */}
             <TabsContent value="signin">
               <form onSubmit={onSignIn} className="space-y-4 pt-4">
                 <div className="space-y-1.5">
-                  <Label>Sign in as</Label>
-                  <div className="grid grid-cols-3 gap-2">
-                    {roleOptions.map((r) => {
-                      const Icon = r.icon;
-                      const active = signInAs === r.value;
-                      return (
-                        <button
-                          type="button"
-                          key={r.value}
-                          onClick={() => setSignInAs(r.value)}
-                          className={`flex flex-col items-center gap-1 rounded-md border p-3 text-xs transition ${
-                            active
-                              ? "border-primary bg-primary/5 text-foreground"
-                              : "border-border text-muted-foreground hover:border-primary/40"
-                          }`}
-                        >
-                          <Icon className="h-4 w-4" />
-                          {r.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-                <div className="space-y-1.5">
                   <Label htmlFor="si-email">Email</Label>
-                  <Input id="si-email" name="email" type="text" autoComplete="email" required />
+                  <Input id="si-email" name="email" type="text" autoComplete="email" />
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="si-password">Password</Label>
-                  <Input id="si-password" name="password" type="password" autoComplete="current-password" required />
+                  <Input id="si-password" name="password" type="password" autoComplete="current-password" />
                 </div>
                 <Button type="submit" className="w-full" disabled={busy}>
-                  {busy && <Loader2 className="h-4 w-4 animate-spin mr-2" />}Sign in as {signInAs}
+                  {busy && <Loader2 className="h-4 w-4 animate-spin mr-2" />}Sign in
                 </Button>
               </form>
             </TabsContent>
 
-
+            {/* ── Sign Up ── */}
             <TabsContent value="signup">
               <form onSubmit={onSignUp} className="space-y-3 pt-4">
                 <div className="space-y-1.5">
                   <Label htmlFor="su-name">Full name</Label>
-                  <Input id="su-name" name="fullName" maxLength={120} />
+                  <Input id="su-name" name="fullName" />
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="su-email">Email</Label>
-                  <Input id="su-email" name="email" type="text" autoComplete="email" required />
+                  <Input id="su-email" name="email" type="text" autoComplete="email" />
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="su-password">Password</Label>
-                  <Input id="su-password" name="password" type="password" required />
+                  <Input id="su-password" name="password" type="password" />
                 </div>
                 <div className="space-y-1.5">
                   <Label>I am a…</Label>
@@ -202,10 +168,9 @@ function AuthPage() {
                     <SelectContent>
                       <SelectItem value="patient"><div className="flex items-center gap-2"><UserRound className="h-4 w-4" />Patient</div></SelectItem>
                       <SelectItem value="doctor"><div className="flex items-center gap-2"><Stethoscope className="h-4 w-4" />Doctor</div></SelectItem>
-                      <SelectItem value="admin"><div className="flex items-center gap-2"><Shield className="h-4 w-4" />Admin (dev/demo)</div></SelectItem>
+                      <SelectItem value="admin"><div className="flex items-center gap-2"><Shield className="h-4 w-4" />Admin</div></SelectItem>
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-muted-foreground">Role can only be set at signup in this demo build.</p>
                 </div>
                 <Button type="submit" className="w-full" disabled={busy}>
                   {busy && <Loader2 className="h-4 w-4 animate-spin mr-2" />}Create account

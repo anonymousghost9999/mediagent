@@ -12,6 +12,7 @@ import { getPatientProfile } from "@/lib/mediagent/live";
 import { supabase } from "@/integrations/supabase/client";
 import { Pencil, Save, X, Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import { patient as defaultPatient } from "@/lib/mediagent/data";
 
 export const Route = createFileRoute("/patient/profile")({ component: Page });
 
@@ -54,7 +55,24 @@ function Page() {
     queryFn: async () => getPatientProfile(user!.id),
   });
 
-  const profile = data?.profile;
+  const profile = data?.profile ?? {
+    id: user?.id ?? defaultPatient.id,
+    full_name: defaultPatient.fullName,
+    email: defaultPatient.email,
+    mobile: defaultPatient.mobile,
+    dob: defaultPatient.dob,
+    gender: defaultPatient.gender,
+    address: defaultPatient.address,
+    blood_group: defaultPatient.bloodGroup,
+    height_cm: defaultPatient.heightCm,
+    weight_kg: defaultPatient.weightKg,
+    allergies: defaultPatient.allergies,
+    chronic_conditions: defaultPatient.chronic,
+    emergency_contact: defaultPatient.emergency,
+    insurance_provider: defaultPatient.insurance,
+    insurance_number: defaultPatient.insuranceNumber,
+    mrn: defaultPatient.mrn,
+  };
   const details = data?.details;
 
   const [editing, setEditing] = useState(false);
@@ -89,7 +107,8 @@ function Page() {
       if (!parsed.success) throw new Error(parsed.error.issues[0].message);
       const d = parsed.data;
 
-      const { error } = await supabase.from("profiles").update({
+      const { error } = await supabase.from("profiles").upsert({
+        id: user!.id,
         full_name: d.full_name,
         email: d.email,
         mobile: d.mobile || null,
@@ -104,7 +123,8 @@ function Page() {
         emergency_contact: d.emergency_contact || null,
         insurance_provider: d.insurance_provider || null,
         insurance_number: d.insurance_number || null,
-      }).eq("id", user!.id);
+        role: user?.role || "patient",
+      });
       if (error) throw error;
       await qc.invalidateQueries({ queryKey: ["patient-profile", user?.id] });
       setEditing(false);

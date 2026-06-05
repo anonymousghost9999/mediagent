@@ -71,13 +71,18 @@ function Page() {
   });
 
   const nameById = new Map((patientNames ?? []).map((row) => [row.id, row.full_name]));
-  const sorted = (queueRows ?? doctorQueue).map((row) => ({
-    id: row.id,
-    patient: nameById.get(row.patient_id) ?? doctorQueue.find((q) => q.id === row.id)?.patient ?? "Unknown patient",
-    severity: Number(row.severity_score ?? 1) as 1 | 2 | 3 | 4 | 5,
-    complaint: row.status ? `${row.status.replaceAll("_", " ").toLowerCase()} · consultation` : "Live consultation",
-    waited: row.created_at ? `${Math.max(1, Math.round((Date.now() - new Date(row.created_at).getTime()) / 60000))}m` : "—",
-  })).sort((a, b) => b.severity - a.severity);
+  const sorted = (queueRows ?? doctorQueue).map((row) => {
+    if ("patient" in row && "waited" in row) {
+      return row as any;
+    }
+    return {
+      id: row.id,
+      patient: nameById.get(row.patient_id) ?? "Unknown patient",
+      severity: Number(row.severity_score ?? 1) as 1 | 2 | 3 | 4 | 5,
+      complaint: row.status ? `${row.status.replaceAll("_", " ").toLowerCase()} · consultation` : "Live consultation",
+      waited: row.created_at ? `${Math.max(1, Math.round((Date.now() - new Date(row.created_at).getTime()) / 60000))}m` : "—",
+    };
+  }).sort((a, b) => b.severity - a.severity);
   const current = sorted[0] ?? doctorQueue[0];
   const doctorName = profile?.full_name ? `Dr. ${profile.full_name.replace(/^Dr\.\s*/i, "")}` : "Dr. Mehta";
 
