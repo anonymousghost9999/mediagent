@@ -89,7 +89,8 @@ def sarvam_stt(audio_bytes: bytes, language_code: str = "en-IN") -> str:
 
 def sarvam_translate(text: str, source_lang: str, target_lang: str = "en-IN") -> str:
     """
-    Translates text between BCP-47 languages using Sarvam Mayura V1 Translation API.
+    Translates text with high clinical fidelity using OpenRouter/Gemini to preserve medical context, 
+    with graceful fallback to Sarvam Mayura Translation API on failure.
     """
     if not text:
         return ""
@@ -99,32 +100,56 @@ def sarvam_translate(text: str, source_lang: str, target_lang: str = "en-IN") ->
     
     if source_bcp == target_bcp:
         return text
-        
-    if not SARVAM_API_KEY:
-        print("[ERROR] Sarvam translation failed: SARVAM_API_KEY is not set.")
-        raise ValueError("SARVAM_API_KEY is not set. Cannot translate text.")
 
+    # Since blind machine translation can lose medical context and instructions,
+    # we use the LLM with a structured medical translation prompt.
+    prompt = f"""
+You are an expert clinical translator fluent in English, Hindi (hi-IN), and Telugu (te-IN).
+Translate the following medical text:
+- Source Language: {source_bcp}
+- Target Language: {target_bcp}
+
+Text to translate:
+\"\"\"
+{text}
+\"\"\"
+
+Translation rules:
+1. Do NOT perform a literal, blind word-for-word translation. Instead, preserve the exact medical context, clinical intent, and symptom severity.
+2. Keep standard medical terminology, drug names, and dosages (e.g. Paracetamol, SpO2, Asthma) clear and readable in the target language. For Hindi or Telugu translations, use standard phonetic spellings or keep the English name in parentheses if it aids patient clarity.
+3. Preserve the tone of the response (e.g. empathetic for patients, professional for doctors).
+4. Output ONLY the final translated text. Do not include any notes, explanations, or wrapper markup.
+"""
     try:
-        url = "https://api.sarvam.ai/translate"
-        headers = {
-            "api-subscription-key": SARVAM_API_KEY,
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "input": text,
-            "source_language_code": source_bcp,
-            "target_language_code": target_bcp,
-            "model": "mayura:v1"
-        }
-        
-        print(f"[Sarvam API] Translating text from {source_bcp} to {target_bcp}")
-        response = httpx.post(url, headers=headers, json=payload, timeout=30.0)
-        response.raise_for_status()
-        res_json = response.json()
-        return res_json.get("translated_text", "").strip()
+        print(f"[Translation] Translating contextually via LLM from {source_bcp} to {target_bcp}")
+        messages = [{"role": "user", "content": prompt}]
+        return call_openrouter(messages, max_tokens=2000)
     except Exception as e:
-        print(f"[ERROR] Sarvam translation failed: {e}.")
-        raise e
+        print(f"[WARNING] Contextual LLM translation failed: {e}. Falling back to default Sarvam API translation.")
+        if not SARVAM_API_KEY:
+            raise e
+        try:
+            url = "https://api.sarvam.ai/translate"
+            headers = {
+                "api-subscription-key": SARVAM_API_KEY,
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "input": text,
+                "source_language_code": source_bcp,
+                "target_language_code": target_bcp,
+                "model": "mayura:v1"
+            }
+            
+            print(f"[Sarvam API] Translating text from {source_bcp} to {target_bcp}")
+            response = httpx.post(url, headers=headers, json=payload, timeout=30.0)
+            response.raise_for_status()
+            res_json = response.json()
+            return res_json.get("translated_text", "").strip()
+        except Exception as fallback_err:
+            print(f"[ERROR] Sarvam fallback translation failed: {fallback_err}.")
+            raise fallback_err
+
 
 def sarvam_tts(text: str, target_language_code: str = "en-IN") -> str:
     """
