@@ -493,3 +493,56 @@ def generate_session_summary(transcript_text: str, clinical_facts: dict) -> dict
             "patient_instructions": ["Follow prescribed treatment plan"],
             "risk_flags": []
         }
+
+def generate_hpi_summary(intake_report: dict) -> str:
+    """
+    Generates a concise, clinical History of Present Illness (HPI) paragraph
+    from the structured patient agent intake report JSON.
+    Returns a single readable paragraph suitable for the IM report HPI field.
+    """
+    if not use_live_gemini:
+        parts = []
+        if intake_report.get("primary_issue"):
+            parts.append("Patient presents with " + intake_report["primary_issue"] + ".")
+        symptoms = intake_report.get("symptoms") or intake_report.get("identified_symptoms") or []
+        if symptoms:
+            parts.append("Reported symptoms include " + ", ".join(symptoms) + ".")
+        if intake_report.get("duration"):
+            parts.append("Duration: " + intake_report["duration"] + ".")
+        return " ".join(parts) or "No history available."
+
+    safe_report = {k: v for k, v in intake_report.items()
+                   if k not in ("agent_response_audio", "agent_response_translated")
+                   and not isinstance(v, bytes)}
+
+    prompt = (
+        "You are a clinical documentation assistant. Given the following structured patient intake report "
+        "(collected by an AI patient agent), write a single concise paragraph of History of Present Illness (HPI) "
+        "in standard clinical language.\n\n"
+        "The HPI should cover: chief complaint, symptom onset and duration, character/severity, "
+        "aggravating/relieving factors, associated symptoms, and relevant history. "
+        "Be factual, use only information present in the report, and write in the third person "
+        "(Patient reports...).\n\n"
+        "Do NOT include diagnosis, prescriptions, or recommendations - only patient-reported history.\n"
+        "Keep it under 120 words.\n\n"
+        "Intake Report:\n"
+        + json.dumps(safe_report, indent=2)
+        + "\n\nRespond with ONLY the HPI paragraph text, no headings or labels."
+    )
+
+    try:
+        hpi = call_openrouter(
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=300
+        )
+        print("[LLM] HPI summary generated (" + str(len(hpi)) + " chars)")
+        return hpi.strip()
+    except Exception as e:
+        print("[ERROR] generate_hpi_summary failed: " + str(e))
+        parts = []
+        if intake_report.get("primary_issue"):
+            parts.append("Patient reports " + intake_report["primary_issue"] + ".")
+        symptoms = intake_report.get("symptoms") or []
+        if symptoms:
+            parts.append("Symptoms include " + ", ".join(symptoms) + ".")
+        return " ".join(parts) or "History unavailable."

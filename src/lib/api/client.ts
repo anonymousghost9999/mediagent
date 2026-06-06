@@ -159,3 +159,14 @@ export async function getSessionSummary(
   if (!response.ok) throw new Error(`Session summary failed: ${response.statusText}`);
   return response.json();
 }
+
+export async function fetchHpiSummary(intakeReport: Record<string, unknown>): Promise<string> {
+  const response = await fetch(`${API_BASE_URL}/api/consult/hpi-summary`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ intake_report: intakeReport }),
+  });
+  if (!response.ok) throw new Error(`HPI summary failed: ${response.statusText}`);
+  const data = await response.json();
+  return data.hpi ?? "";
+}

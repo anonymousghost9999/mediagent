@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -8,19 +8,18 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { aiFields, safetyAlerts, patient, timeline, severityLabel, type Severity } from "@/lib/mediagent/data";
+import { severityLabel, type Severity, type ReviewStatus } from "@/lib/mediagent/data";
 import { StatusPill } from "@/components/mediagent/badges";
 import { IMReportForm, downloadReportAsPDF } from "@/components/mediagent/im-report-form";
 import { logAudit, treatmentStatuses, treatmentStatusLabel, type TreatmentStatus } from "@/lib/mediagent/store";
 import { getConsultationById } from "@/lib/mediagent/live";
 import type { IMReportData } from "@/lib/mediagent/im-report";
-import { startConsultation, transcribeConsultation, extractTextConsultation, approveConsultation, getSessionSummary, type SessionSummary } from "@/lib/api/client";
+import { startConsultation, transcribeConsultation, extractTextConsultation, approveConsultation, getSessionSummary, fetchHpiSummary, type SessionSummary } from "@/lib/api/client";
 import {
   AlertTriangle, Check, Pencil, X, ShieldCheck, Mic, MicOff, Save, Download, FileText, Loader2,
   Activity, Brain, ListChecks, User, Flag, Stethoscope, ClipboardList, Clock, Pill,
 } from "lucide-react";
 import { toast } from "sonner";
-import type { ReviewStatus } from "@/lib/mediagent/data";
 
 export const Route = createFileRoute("/doctor/consultations/$id")({ component: Page });
 
@@ -31,29 +30,32 @@ function Page() {
     queryKey: ["doctor-consultation", id],
     queryFn: async () => getConsultationById(id),
   });
-  const currentPatient = data?.profile ? {
-    fullName: data.profile.full_name ?? patient.fullName,
-    mrn: data.profile.mrn ?? patient.mrn,
-    age: data.profile.dob ? Math.max(0, new Date().getFullYear() - new Date(data.profile.dob).getFullYear()) : patient.age,
-    gender: (data.details as any)?.gender ?? (data.profile as any)?.gender ?? patient.gender,
-    bloodGroup: (data.profile as any)?.blood_group ?? (data.details as any)?.blood_group ?? patient.bloodGroup,
-    bp: patient.bp,
-    bloodSugar: patient.bloodSugar,
-    allergies: ((data.details as any)?.known_allergies as string[] | undefined) ?? patient.allergies,
-    chronic: ((data.details as any)?.chronic_conditions as string[] | undefined) ?? patient.chronic,
-    currentMeds: ((data.profile as any)?.current_meds as string[] | undefined) ?? patient.currentMeds,
-  } : patient;
+  const currentPatient = {
+    fullName: data?.profile?.full_name ?? "—",
+    mrn: data?.profile?.mrn ?? "—",
+    age: data?.profile?.dob ? Math.max(0, new Date().getFullYear() - new Date(data.profile.dob).getFullYear()) : null,
+    gender: (data?.profile as any)?.gender ?? "—",
+    bloodGroup: (data?.profile as any)?.blood_group ?? "—",
+    allergies: ((data?.profile as any)?.allergies as string[] | undefined) ?? [],
+    chronic: ((data?.profile as any)?.chronic_conditions as string[] | undefined) ?? [],
+    currentMeds: ((data?.profile as any)?.current_meds as string[] | undefined) ?? [],
+  };
 
   // Parse patient agent intake report from Supabase
   const intakeSummaryRaw = (data?.consultation as any)?.intake_summary;
-  const intakeReport = (() => {
+  const intakeReport = useMemo(() => {
     if (!intakeSummaryRaw) return null;
     try { return JSON.parse(intakeSummaryRaw); } catch { return null; }
-  })();
+  }, [intakeSummaryRaw]);
   const intakeAvailable = !!intakeReport;
 
   // AI review state
-  const [fields, setFields] = useState(aiFields);
+  const [fields, setFields] = useState<{id:string;label:string;ai:string;status:ReviewStatus;confidence:number}[]>([
+    { id: "f1", label: "Suggested Diagnosis", ai: "", status: "PENDING_REVIEW", confidence: 0 },
+    { id: "f2", label: "Suggested Prescription", ai: "", status: "PENDING_REVIEW", confidence: 0 },
+    { id: "f3", label: "Follow-Up Plan", ai: "", status: "PENDING_REVIEW", confidence: 0 },
+    { id: "f4", label: "Tests Ordered", ai: "", status: "PENDING_REVIEW", confidence: 0 },
+  ]);
   const [editing, setEditing] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
 
@@ -75,7 +77,7 @@ function Page() {
   // IM report
   const [report, setReport] = useState<IMReportData>({
     chief_complaint: "",
-    severity: "3 Medium",
+    severity: "",
   });
 
   // Treatment status
@@ -106,6 +108,65 @@ function Page() {
     initConsult();
 
   }, [id]);
+
+  // Auto-fill IM Report Subjective section from patient agent intake report
+  useEffect(() => {
+    if (!intakeReport) return;
+
+    // chief_complaint: primary issue reported by patient
+    const complaint = intakeReport.primary_issue
+      || intakeReport.english_translation
+      || (data?.consultation as any)?.chief_complaint
+      || "";
+
+    // severity: map ESI score (1–5) to IM report radio option string
+    const severityMap: Record<number, string> = {
+      1: "1 Routine", 2: "2 Low", 3: "3 Medium", 4: "4 High", 5: "5 Emergency",
+    };
+    const score = typeof intakeReport.severity_score === "number" ? intakeReport.severity_score : 3;
+    const severityVal = severityMap[score] ?? "3 Medium";
+
+    // onset: derive from duration text heuristics
+    let onset = "";
+    const dur: string = (intakeReport.duration || "").toLowerCase();
+    if (dur.includes("sudden") || dur.includes("acute") || dur.includes("hour")) onset = "Sudden";
+    else if (dur.includes("day") || dur.includes("week")) onset = "Gradual";
+    else if (dur.includes("recur") || dur.includes("episod")) onset = "Recurrent";
+    else if (dur.includes("month") || dur.includes("year") || dur.includes("chronic")) onset = "Chronic";
+
+    // Fill non-HPI fields immediately
+    setReport((prev) => ({
+      ...prev,
+      ...(complaint && !prev.chief_complaint ? { chief_complaint: complaint } : {}),
+      ...(!prev.severity ? { severity: severityVal } : {}),
+      ...(onset && !prev.onset ? { onset } : {}),
+      // Placeholder while LLM generates HPI
+      ...(!prev.hpi ? { hpi: "Generating clinical summary…" } : {}),
+    }));
+
+    // Fetch LLM-generated HPI from backend (async, non-blocking)
+    fetchHpiSummary(intakeReport as Record<string, unknown>)
+      .then((hpi) => {
+        if (hpi) {
+          setReport((prev) => ({
+            ...prev,
+            hpi,
+          }));
+        }
+      })
+      .catch((err) => {
+        console.warn("[HPI] Failed to generate LLM summary, leaving placeholder:", err);
+        // Replace placeholder with symptom list fallback
+        const symptoms: string[] = intakeReport.symptoms ?? intakeReport.identified_symptoms ?? [];
+        const fallback = symptoms.length > 0
+          ? `Patient reports ${complaint || symptoms.join(", ")}.`
+          : (complaint || "");
+        if (fallback) {
+          setReport((prev) => ({ ...prev, hpi: fallback }));
+        }
+      });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [intakeReport]);
 
 
   const updateField = (fid: string, st: ReviewStatus, edit?: string) => {
@@ -305,7 +366,7 @@ function Page() {
   };
 
   const allApproved = fields.every((f) => f.status === "APPROVED" || f.status === "MODIFIED_AND_APPROVED");
-  const hasCritical = (liveSafetyAlerts.length > 0 ? liveSafetyAlerts : safetyAlerts).some(
+  const hasCritical = (liveSafetyAlerts).some(
     (a) => (a.level as string).toUpperCase() === "CRITICAL"
   );
 
@@ -476,22 +537,22 @@ function Page() {
                 <span className="text-xs font-mono font-normal text-muted-foreground bg-muted px-2 py-0.5 rounded">{currentPatient.mrn}</span>
               </div>
               <div className="text-xs text-muted-foreground">
-                {currentPatient.age}y · {currentPatient.gender} · Blood Group: {currentPatient.bloodGroup} · BP: {currentPatient.bp} · Sugar: {currentPatient.bloodSugar}
+                {currentPatient.age !== null ? `${currentPatient.age}y` : "Age unknown"} · {currentPatient.gender} · Blood Group: {currentPatient.bloodGroup}
               </div>
             </div>
             
             <div className="flex gap-4 flex-wrap text-xs">
               <div className="bg-background/80 border p-2 rounded min-w-[150px]">
                 <div className="text-[10px] uppercase font-mono text-muted-foreground">Allergies</div>
-                <div className="font-medium text-destructive">{currentPatient.allergies.join(", ")}</div>
+                <div className="font-medium text-destructive">{currentPatient.allergies.length > 0 ? currentPatient.allergies.join(", ") : "None reported"}</div>
               </div>
               <div className="bg-background/80 border p-2 rounded min-w-[150px]">
                 <div className="text-[10px] uppercase font-mono text-muted-foreground">Chronic Conditions</div>
-                <div className="font-medium text-foreground">{currentPatient.chronic.join(", ")}</div>
+                <div className="font-medium text-foreground">{currentPatient.chronic.length > 0 ? currentPatient.chronic.join(", ") : "None"}</div>
               </div>
               <div className="bg-background/80 border p-2 rounded min-w-[150px]">
                 <div className="text-[10px] uppercase font-mono text-muted-foreground">Current Medications</div>
-                <div className="font-medium text-foreground">{currentPatient.currentMeds.join(", ")}</div>
+                <div className="font-medium text-foreground">{currentPatient.currentMeds.length > 0 ? currentPatient.currentMeds.join(", ") : "None"}</div>
               </div>
             </div>
           </div>
@@ -890,8 +951,8 @@ function Page() {
                 variant="outline"
                 onClick={() => downloadReportAsPDF({
                   title: `IM Report · ${id}`,
-                  patientName: patient.fullName,
-                  patientMrn: patient.mrn,
+                  patientName: currentPatient.fullName,
+                  patientMrn: currentPatient.mrn,
                   doctor: "Dr. R. Mehta",
                   data: report,
                 })}
@@ -962,7 +1023,7 @@ function Page() {
 
         <Card className="p-4 space-y-2">
           <div className="flex items-center gap-2 text-sm font-semibold"><ShieldCheck className="h-4 w-4 text-accent" /> Medication safety</div>
-          {(liveSafetyAlerts.length > 0 ? liveSafetyAlerts : safetyAlerts).map((a, i) => (
+          {(liveSafetyAlerts).map((a, i) => (
             <div key={i} className="text-xs flex gap-2 items-start">
               <AlertTriangle className={`h-3.5 w-3.5 mt-0.5 ${a.level === "HIGH" || a.level === "High" ? "text-destructive" : "text-muted-foreground"}`} />
               <div><b>{a.level}:</b> {a.msg}</div>
