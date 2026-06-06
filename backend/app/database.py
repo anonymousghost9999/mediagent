@@ -202,6 +202,7 @@ def save_consultation(consult_data: dict) -> dict:
         "medications": consult_data.get("medications", []),
         "doctor_notes": consult_data.get("doctor_notes", ""),
         "created_at": consult_data.get("created_at") or now_str,
+        "approved_at": consult_data.get("approved_at"),
         # Multi-language audit columns
         "original_language": consult_data.get("original_language", "en-IN"),
         "intake_original_transcript": consult_data.get("intake_original_transcript", ""),
@@ -309,3 +310,79 @@ def clear_db():
             os.remove(LOCAL_DB_FILE)
         except Exception:
             pass
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Longitudinal Patient Medical Record
+# ──────────────────────────────────────────────────────────────────────────────
+
+BLANK_MEDICAL_RECORD = {
+    "total_consultations": 0,
+    "active_conditions": [],
+    "allergy_records": [],
+    "treatment_progress": [],
+    "recent_developments": [],
+    "medication_history": [],
+    "current_medications": []
+}
+
+def get_medical_record(patient_id: str) -> dict:
+    """
+    Fetches the longitudinal patient_medical_records row for patient_id.
+    Returns None if no record exists yet.
+    """
+    is_valid_uuid = True
+    try:
+        uuid.UUID(str(patient_id))
+    except ValueError:
+        is_valid_uuid = False
+
+    if supabase_client and is_valid_uuid:
+        try:
+            res = supabase_client.table("patient_medical_records").select("*").eq("patient_id", patient_id).execute()
+            if res.data:
+                return res.data[0]
+        except Exception as e:
+            print(f"[ERROR] Supabase get_medical_record failed: {e}. Querying locally.")
+
+    db = _load_local_db()
+    records = db.get("medical_records", {})
+    return records.get(patient_id)
+
+
+def upsert_medical_record(patient_id: str, record_data: dict) -> dict:
+    """
+    Upserts the longitudinal patient_medical_records row for patient_id.
+    record_data should contain all longitudinal fields (merged result).
+    """
+    is_valid_uuid = True
+    try:
+        uuid.UUID(str(patient_id))
+    except ValueError:
+        is_valid_uuid = False
+
+    now_str = datetime.utcnow().isoformat()
+    payload = {
+        "patient_id": patient_id,
+        "last_updated_at": now_str,
+        **{k: v for k, v in record_data.items() if k not in ("patient_id", "updated_at", "created_at")}
+    }
+
+    if supabase_client and is_valid_uuid:
+        try:
+            existing = supabase_client.table("patient_medical_records").select("id").eq("patient_id", patient_id).execute()
+            if existing.data:
+                rec_id = existing.data[0]["id"]
+                res = supabase_client.table("patient_medical_records").update(payload).eq("id", rec_id).execute()
+            else:
+                res = supabase_client.table("patient_medical_records").insert(payload).execute()
+            if res.data:
+                return res.data[0]
+        except Exception as e:
+            print(f"[ERROR] Supabase upsert_medical_record failed: {e}. Saving locally.")
+
+    db = _load_local_db()
+    if "medical_records" not in db:
+        db["medical_records"] = {}
+    db["medical_records"][patient_id] = payload
+    _save_local_db(db)
+    return payload

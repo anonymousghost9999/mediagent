@@ -86,6 +86,7 @@ function Page() {
 
   const [liveConsultationOutput, setLiveConsultationOutput] = useState<any>(null);
   const [liveSafetyAlerts, setLiveSafetyAlerts] = useState<any[]>([]);
+  const [medicalRecord, setMedicalRecord] = useState<any>(null);
   const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
 
@@ -568,6 +569,10 @@ function Page() {
         } else {
           setLiveSafetyAlerts([{ level: "LOW", msg: "No drug safety conflicts or allergy alerts found." }]);
         }
+      }
+
+      if (res?.medical_record) {
+        setMedicalRecord(res.medical_record);
       }
 
       downloadReportAsPDF({
@@ -1164,6 +1169,57 @@ function Page() {
             </div>
           ))}
         </Card>
+
+        {/* Consultation history counter */}
+        {medicalRecord && (
+          <div className="rounded-lg border border-border p-4 mt-4">
+            <h3 className="text-sm font-medium text-muted-foreground mb-1">Consultation history</h3>
+            <p className="text-2xl font-semibold">
+              {medicalRecord.total_consultations}
+              <span className="text-sm font-normal text-muted-foreground ml-2">
+                total visit{medicalRecord.total_consultations !== 1 ? "s" : ""}
+              </span>
+            </p>
+          </div>
+        )}
+
+        {/* Active conditions */}
+        {medicalRecord?.active_conditions?.length > 0 && (
+          <div className="rounded-lg border border-border p-4 mt-4">
+            <h3 className="text-sm font-medium text-muted-foreground mb-2">Active conditions</h3>
+            <ul className="space-y-1">
+              {medicalRecord.active_conditions.map((c: any, i: number) => (
+                <li key={i} className="flex items-center justify-between text-sm">
+                  <span>{c.name}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {c.icd10_code !== "PENDING_VALIDATION" ? c.icd10_code : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Current medications */}
+        {medicalRecord?.current_medications !== undefined && (
+          <div className="rounded-lg border border-border p-4 mt-4">
+            <h3 className="text-sm font-medium text-muted-foreground mb-2">Current medications</h3>
+            {medicalRecord.current_medications.length === 0 ? (
+              <p className="text-sm text-muted-foreground italic">No medications prescribed</p>
+            ) : (
+              <ul className="space-y-1">
+                {medicalRecord.current_medications.map((m: any, i: number) => (
+                  <li key={i} className="text-sm">
+                    {typeof m === "string" ? m : m.name}
+                    {m.dosage && (
+                      <span className="text-xs text-muted-foreground ml-2">{m.dosage}</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
 
         <Button className="w-full" size="lg" disabled={!allApproved || hasCritical || transcribing} onClick={finalize}>
           Finalize EHR & download PDF
