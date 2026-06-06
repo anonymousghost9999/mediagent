@@ -36,7 +36,7 @@ function Page() {
 
       const { data, error } = await supabase
         .from("consultations")
-        .insert({ patient_id: user.id, status: "drafting", severity_score: 3 })
+        .insert({ id: crypto.randomUUID(), patient_id: user.id, status: "drafting", severity_score: 3 })
         .select("id")
         .single();
 

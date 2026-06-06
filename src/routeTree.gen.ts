@@ -33,8 +33,8 @@ import { Route as PatientTreatmentsHistoryRouteImport } from './routes/patient.t
 import { Route as PatientConsultationNewRouteImport } from './routes/patient.consultation.new'
 import { Route as PatientConsultationIdRouteImport } from './routes/patient.consultation.$id'
 import { Route as DoctorConsultationsIdRouteImport } from './routes/doctor.consultations.$id'
-import { Route as PatientTreatmentsHistoryIdRouteImport } from './routes/patient.treatments.history.$id'
-import { Route as PatientConsultationIdReportRouteImport } from './routes/patient.consultation.$id.report'
+import { Route as PatientTreatmentsHistoryIdRouteImport } from './routes/patient.treatments.history_.$id'
+import { Route as PatientConsultationIdReportRouteImport } from './routes/patient.consultation_.$id.report'
 
 const AuthRoute = AuthRouteImport.update({
   id: '/auth',
@@ -160,15 +160,15 @@ const DoctorConsultationsIdRoute = DoctorConsultationsIdRouteImport.update({
 } as any)
 const PatientTreatmentsHistoryIdRoute =
   PatientTreatmentsHistoryIdRouteImport.update({
-    id: '/$id',
-    path: '/$id',
-    getParentRoute: () => PatientTreatmentsHistoryRoute,
+    id: '/patient/treatments/history_/$id',
+    path: '/patient/treatments/history/$id',
+    getParentRoute: () => rootRouteImport,
   } as any)
 const PatientConsultationIdReportRoute =
   PatientConsultationIdReportRouteImport.update({
-    id: '/report',
-    path: '/report',
-    getParentRoute: () => PatientConsultationIdRoute,
+    id: '/patient/consultation_/$id/report',
+    path: '/patient/consultation/$id/report',
+    getParentRoute: () => rootRouteImport,
   } as any)
 
 export interface FileRoutesByFullPath {
@@ -192,9 +192,9 @@ export interface FileRoutesByFullPath {
   '/patient/reports': typeof PatientReportsRoute
   '/patient/timeline': typeof PatientTimelineRoute
   '/doctor/consultations/$id': typeof DoctorConsultationsIdRoute
-  '/patient/consultation/$id': typeof PatientConsultationIdRouteWithChildren
+  '/patient/consultation/$id': typeof PatientConsultationIdRoute
   '/patient/consultation/new': typeof PatientConsultationNewRoute
-  '/patient/treatments/history': typeof PatientTreatmentsHistoryRouteWithChildren
+  '/patient/treatments/history': typeof PatientTreatmentsHistoryRoute
   '/patient/treatments/ongoing': typeof PatientTreatmentsOngoingRoute
   '/patient/consultation/$id/report': typeof PatientConsultationIdReportRoute
   '/patient/treatments/history/$id': typeof PatientTreatmentsHistoryIdRoute
@@ -220,9 +220,9 @@ export interface FileRoutesByTo {
   '/patient/reports': typeof PatientReportsRoute
   '/patient/timeline': typeof PatientTimelineRoute
   '/doctor/consultations/$id': typeof DoctorConsultationsIdRoute
-  '/patient/consultation/$id': typeof PatientConsultationIdRouteWithChildren
+  '/patient/consultation/$id': typeof PatientConsultationIdRoute
   '/patient/consultation/new': typeof PatientConsultationNewRoute
-  '/patient/treatments/history': typeof PatientTreatmentsHistoryRouteWithChildren
+  '/patient/treatments/history': typeof PatientTreatmentsHistoryRoute
   '/patient/treatments/ongoing': typeof PatientTreatmentsOngoingRoute
   '/patient/consultation/$id/report': typeof PatientConsultationIdReportRoute
   '/patient/treatments/history/$id': typeof PatientTreatmentsHistoryIdRoute
@@ -249,12 +249,12 @@ export interface FileRoutesById {
   '/patient/reports': typeof PatientReportsRoute
   '/patient/timeline': typeof PatientTimelineRoute
   '/doctor/consultations/$id': typeof DoctorConsultationsIdRoute
-  '/patient/consultation/$id': typeof PatientConsultationIdRouteWithChildren
+  '/patient/consultation/$id': typeof PatientConsultationIdRoute
   '/patient/consultation/new': typeof PatientConsultationNewRoute
-  '/patient/treatments/history': typeof PatientTreatmentsHistoryRouteWithChildren
+  '/patient/treatments/history': typeof PatientTreatmentsHistoryRoute
   '/patient/treatments/ongoing': typeof PatientTreatmentsOngoingRoute
-  '/patient/consultation/$id/report': typeof PatientConsultationIdReportRoute
-  '/patient/treatments/history/$id': typeof PatientTreatmentsHistoryIdRoute
+  '/patient/consultation_/$id/report': typeof PatientConsultationIdReportRoute
+  '/patient/treatments/history_/$id': typeof PatientTreatmentsHistoryIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -339,8 +339,8 @@ export interface FileRouteTypes {
     | '/patient/consultation/new'
     | '/patient/treatments/history'
     | '/patient/treatments/ongoing'
-    | '/patient/consultation/$id/report'
-    | '/patient/treatments/history/$id'
+    | '/patient/consultation_/$id/report'
+    | '/patient/treatments/history_/$id'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -364,10 +364,12 @@ export interface RootRouteChildren {
   PatientReportsRoute: typeof PatientReportsRoute
   PatientTimelineRoute: typeof PatientTimelineRoute
   DoctorConsultationsIdRoute: typeof DoctorConsultationsIdRoute
-  PatientConsultationIdRoute: typeof PatientConsultationIdRouteWithChildren
+  PatientConsultationIdRoute: typeof PatientConsultationIdRoute
   PatientConsultationNewRoute: typeof PatientConsultationNewRoute
-  PatientTreatmentsHistoryRoute: typeof PatientTreatmentsHistoryRouteWithChildren
+  PatientTreatmentsHistoryRoute: typeof PatientTreatmentsHistoryRoute
   PatientTreatmentsOngoingRoute: typeof PatientTreatmentsOngoingRoute
+  PatientConsultationIdReportRoute: typeof PatientConsultationIdReportRoute
+  PatientTreatmentsHistoryIdRoute: typeof PatientTreatmentsHistoryIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -540,49 +542,22 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DoctorConsultationsIdRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/patient/treatments/history/$id': {
-      id: '/patient/treatments/history/$id'
-      path: '/$id'
+    '/patient/treatments/history_/$id': {
+      id: '/patient/treatments/history_/$id'
+      path: '/patient/treatments/history/$id'
       fullPath: '/patient/treatments/history/$id'
       preLoaderRoute: typeof PatientTreatmentsHistoryIdRouteImport
-      parentRoute: typeof PatientTreatmentsHistoryRoute
+      parentRoute: typeof rootRouteImport
     }
-    '/patient/consultation/$id/report': {
-      id: '/patient/consultation/$id/report'
-      path: '/report'
+    '/patient/consultation_/$id/report': {
+      id: '/patient/consultation_/$id/report'
+      path: '/patient/consultation/$id/report'
       fullPath: '/patient/consultation/$id/report'
       preLoaderRoute: typeof PatientConsultationIdReportRouteImport
-      parentRoute: typeof PatientConsultationIdRoute
+      parentRoute: typeof rootRouteImport
     }
   }
 }
-
-interface PatientConsultationIdRouteChildren {
-  PatientConsultationIdReportRoute: typeof PatientConsultationIdReportRoute
-}
-
-const PatientConsultationIdRouteChildren: PatientConsultationIdRouteChildren = {
-  PatientConsultationIdReportRoute: PatientConsultationIdReportRoute,
-}
-
-const PatientConsultationIdRouteWithChildren =
-  PatientConsultationIdRoute._addFileChildren(
-    PatientConsultationIdRouteChildren,
-  )
-
-interface PatientTreatmentsHistoryRouteChildren {
-  PatientTreatmentsHistoryIdRoute: typeof PatientTreatmentsHistoryIdRoute
-}
-
-const PatientTreatmentsHistoryRouteChildren: PatientTreatmentsHistoryRouteChildren =
-  {
-    PatientTreatmentsHistoryIdRoute: PatientTreatmentsHistoryIdRoute,
-  }
-
-const PatientTreatmentsHistoryRouteWithChildren =
-  PatientTreatmentsHistoryRoute._addFileChildren(
-    PatientTreatmentsHistoryRouteChildren,
-  )
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
@@ -605,10 +580,12 @@ const rootRouteChildren: RootRouteChildren = {
   PatientReportsRoute: PatientReportsRoute,
   PatientTimelineRoute: PatientTimelineRoute,
   DoctorConsultationsIdRoute: DoctorConsultationsIdRoute,
-  PatientConsultationIdRoute: PatientConsultationIdRouteWithChildren,
+  PatientConsultationIdRoute: PatientConsultationIdRoute,
   PatientConsultationNewRoute: PatientConsultationNewRoute,
-  PatientTreatmentsHistoryRoute: PatientTreatmentsHistoryRouteWithChildren,
+  PatientTreatmentsHistoryRoute: PatientTreatmentsHistoryRoute,
   PatientTreatmentsOngoingRoute: PatientTreatmentsOngoingRoute,
+  PatientConsultationIdReportRoute: PatientConsultationIdReportRoute,
+  PatientTreatmentsHistoryIdRoute: PatientTreatmentsHistoryIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
