@@ -109,6 +109,53 @@ function Page() {
 
   }, [id]);
 
+  // Restore consultation extraction + session summary from DB on page load
+  useEffect(() => {
+    const savedConsult = (data?.consultation as any)?.consultation_summary;
+    if (savedConsult) {
+      setLiveConsultationOutput((prev: any) => prev ?? (typeof savedConsult === "object" ? savedConsult : (() => { try { return JSON.parse(savedConsult); } catch { return null; } })()));
+    }
+    const savedSummary = (data?.consultation as any)?.session_summary;
+    if (savedSummary) {
+      setSessionSummary((prev) => prev ?? (typeof savedSummary === "object" ? savedSummary : (() => { try { return JSON.parse(savedSummary); } catch { return null; } })()));
+    }
+  }, [data]);
+
+  // Auto-fill Doctor Analysis section from session summary + consultation extraction
+  useEffect(() => {
+    setAnalysis((prev) => {
+      const updates: Partial<typeof prev> = {};
+
+      // analysis field ← session summary overview
+      if (!prev.analysis && sessionSummary?.overview) {
+        updates.analysis = sessionSummary.overview;
+      }
+
+      // diagnosis ← consultation extraction
+      if (!prev.diagnosis && liveConsultationOutput?.diagnosis) {
+        updates.diagnosis = liveConsultationOutput.diagnosis;
+      }
+
+      // prescription ← format prescribed_drugs array
+      if (!prev.prescription) {
+        const drugs = liveConsultationOutput?.prescribed_drugs ?? [];
+        if (drugs.length > 0) {
+          updates.prescription = drugs
+            .map((d: any) =>
+              [d.name, d.dosage, d.frequency, d.duration ? `× ${d.duration}` : ""]
+                .filter(Boolean).join(" ")
+            )
+            .join("\n");
+        }
+      }
+
+      // clinicalNotes: intentionally left for doctor to fill
+
+      return Object.keys(updates).length > 0 ? { ...prev, ...updates } : prev;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionSummary, liveConsultationOutput]);
+
   // Auto-fill IM Report Subjective section from patient agent intake report
   useEffect(() => {
     if (!intakeReport) return;
@@ -167,6 +214,70 @@ function Page() {
       });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [intakeReport]);
+
+  // Auto-fill Assessment + Plan sections when consultation agent extraction arrives
+  useEffect(() => {
+    if (!liveConsultationOutput) return;
+
+    const co = liveConsultationOutput;
+
+    // ── Assessment ────────────────────────────────────────────────────────
+    const diagnosis: string = co.diagnosis || "";
+    const icd10: string = co.icd10_code || co.icd_10_code || "";
+    // differential: intentionally left empty — doctor fills
+
+    // ── Plan: Prescription ────────────────────────────────────────────────
+    const drugs: { name?: string; dosage?: string; frequency?: string; duration?: string }[] =
+      co.prescribed_drugs ?? co.medications ?? [];
+    const prescription = drugs
+      .map((d) =>
+        [d.name, d.dosage, d.frequency, d.duration ? `× ${d.duration}` : ""]
+          .filter(Boolean).join(" ")
+      )
+      .join("\n");
+
+    // ── Plan: Investigations (checkbox — match names to schema options) ────
+    const checkboxOptions = ["CBC", "CRP", "Chest X-ray", "Spirometry", "ECG", "Blood glucose"];
+    const orderedTests: { name?: string }[] = co.tests_and_investigations ?? [];
+    const matchedInvestigations = checkboxOptions.filter((opt) =>
+      orderedTests.some((t) =>
+        (t.name || "").toLowerCase().includes(opt.toLowerCase())
+      )
+    );
+
+    // ── Plan: Lifestyle / Advice — from follow_up.instructions ────────────
+    const followUpObj = co.follow_up;
+    const advice: string = followUpObj?.instructions
+      || followUpObj?.patient_instructions
+      || co.patient_instructions
+      || "";
+
+    // ── Plan: Follow-up select — map timing to schema options ─────────────
+    const followUpOptions = ["No follow-up", "1 week", "2 weeks", "1 month", "3 months", "As needed"];
+    const timing: string = (followUpObj?.timing || "").toLowerCase();
+    let followUpVal = "";
+    if (!timing || timing === "none") followUpVal = "No follow-up";
+    else if (timing.includes("1 week") || timing.includes("one week") || timing.includes("7 day")) followUpVal = "1 week";
+    else if (timing.includes("2 week") || timing.includes("two week") || timing.includes("14 day") || timing.includes("fortnight")) followUpVal = "2 weeks";
+    else if (timing.includes("1 month") || timing.includes("one month") || timing.includes("30 day") || timing.includes("4 week")) followUpVal = "1 month";
+    else if (timing.includes("3 month") || timing.includes("three month") || timing.includes("quarter")) followUpVal = "3 months";
+    else if (timing.includes("need") || timing.includes("required") || timing.includes("worsening") || timing.includes("immediate")) followUpVal = "As needed";
+    else followUpVal = "As needed"; // catch-all for freeform timing
+
+    setReport((prev) => ({
+      ...prev,
+      // Assessment
+      ...(diagnosis ? { diagnosis } : {}),
+      ...(icd10 ? { icd10 } : {}),
+      // differential left untouched
+      // Plan
+      ...(prescription ? { prescription } : {}),
+      ...(matchedInvestigations.length > 0 ? { investigations: matchedInvestigations } : {}),
+      ...(advice ? { advice } : {}),
+      ...(followUpVal ? { follow_up: followUpVal } : {}),
+    }));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveConsultationOutput]);
 
 
   const updateField = (fid: string, st: ReviewStatus, edit?: string) => {
@@ -272,6 +383,18 @@ function Page() {
       const res = await extractTextConsultation(id, fullText);
       setLiveConsultationOutput(res);
 
+      // ── Persist consultation extraction to Supabase (fire-and-forget) ────
+      import("@/integrations/supabase/client").then(({ supabase }) => {
+        supabase
+          .from("consultations")
+          .update({ consultation_summary: res })
+          .eq("id", id)
+          .then(({ error }) => {
+            if (error) console.error("[DB] Failed to save consultation_summary:", error.message);
+            else console.log("[DB] consultation_summary saved for", id);
+          });
+      });
+
       toast.success("Dialogue transcribed and clinical summary extracted!", { id: toastId });
 
       if (res.raw_transcript) {
@@ -343,6 +466,17 @@ function Page() {
       }).then((s) => {
         setSessionSummary(s);
         toast.info("Session summary ready", { description: "AI has generated a structured summary below the transcript." });
+        // ── Persist session summary to Supabase (fire-and-forget) ──────────
+        import("@/integrations/supabase/client").then(({ supabase }) => {
+          supabase
+            .from("consultations")
+            .update({ session_summary: s })
+            .eq("id", id)
+            .then(({ error }) => {
+              if (error) console.error("[DB] Failed to save session_summary:", error.message);
+              else console.log("[DB] session_summary saved for", id);
+            });
+        });
       }).catch((err) => {
         console.error("Session summary failed:", err);
       }).finally(() => setSummaryLoading(false));
