@@ -1,6 +1,6 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState, useEffect, useRef, useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -20,12 +20,17 @@ import {
   Activity, Brain, ListChecks, User, Flag, Stethoscope, ClipboardList, Clock, Pill,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useAuth } from "@/hooks/use-auth";
+import { supabase } from "@/integrations/supabase/client";
 
 export const Route = createFileRoute("/doctor/consultations/$id")({ component: Page });
 
 
 function Page() {
   const { id } = Route.useParams();
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { data } = useQuery({
     queryKey: ["doctor-consultation", id],
     queryFn: async () => getConsultationById(id),
@@ -110,6 +115,21 @@ function Page() {
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const liveTranscriptRef = useRef<string[]>([]);  // accumulates final lines for backend
   const hasStartedRef = useRef(false);
+
+  // Auto-assign to the current doctor if unassigned
+  useEffect(() => {
+    if (!data?.consultation || !user?.id) return;
+    const assigned = (data.consultation as any).assigned_doctor_id;
+    if (!assigned) {
+      supabase
+        .from("consultations")
+        .update({ assigned_doctor_id: user.id })
+        .eq("id", id)
+        .then(({ error }) => {
+          if (!error) toast.info("Case assigned to you.");
+        });
+    }
+  }, [data?.consultation, user?.id, id]);
 
   // Trigger startConsultation on first mount only (guarded with ref to prevent re-calls on re-render)
   useEffect(() => {
@@ -499,9 +519,41 @@ function Page() {
         console.error("Session summary failed:", err);
       }).finally(() => setSummaryLoading(false));
 
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      toast.error("Failed to transcribe dialogue. Using mockup fallbacks.", { id: toastId });
+      const msg: string = err?.message || String(err);
+      // Surface specific OpenRouter errors clearly
+      if (msg.includes("OPENROUTER_RATE_LIMIT")) {
+        toast.error("⏱ AI rate limit hit", {
+          id: toastId,
+          description: "Too many requests. Wait 30–60 seconds then try again.",
+          duration: 8000,
+        });
+      } else if (msg.includes("OPENROUTER_QUOTA_EXCEEDED")) {
+        toast.error("💳 OpenRouter credits exhausted", {
+          id: toastId,
+          description: "Your API balance is empty. Top up at openrouter.ai/credits and restart the backend.",
+          duration: 12000,
+        });
+      } else if (msg.includes("OPENROUTER_AUTH_FAILED")) {
+        toast.error("🔑 Invalid API key", {
+          id: toastId,
+          description: "Check OPENROUTER_API_KEY in backend/.env and restart the server.",
+          duration: 10000,
+        });
+      } else if (msg.includes("OPENROUTER_MODEL_UNAVAILABLE")) {
+        toast.error("🤖 AI model temporarily offline", {
+          id: toastId,
+          description: "OpenRouter model is down. Try again in a few seconds.",
+          duration: 8000,
+        });
+      } else {
+        toast.error("Transcription failed", {
+          id: toastId,
+          description: msg.slice(0, 200) || "Internal server error. Check backend terminal for details.",
+          duration: 8000,
+        });
+      }
     } finally {
       setTranscribing(false);
     }
@@ -661,6 +713,13 @@ function Page() {
         entity: `consultation:${id}`,
         after: res
       });
+
+      // Invalidate query caches and redirect back to doctor dashboard
+      queryClient.invalidateQueries({ queryKey: ["doctor-dashboard-all-records"] });
+      queryClient.invalidateQueries({ queryKey: ["doctor-dashboard-pending-reviews"] });
+      setTimeout(() => {
+        navigate({ to: "/doctor/dashboard" });
+      }, 1500);
 
     } catch (err) {
       console.error(err);

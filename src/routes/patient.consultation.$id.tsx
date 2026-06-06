@@ -139,6 +139,7 @@ function Page() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     // Generate or resolve patient ID on load
@@ -189,7 +190,11 @@ function Page() {
   }, [resolvedId, search.lang]);
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+    // Use a tiny timeout so the DOM has painted the new bubble before we scroll
+    const t = setTimeout(() => {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }, 50);
+    return () => clearTimeout(t);
   }, [msgs, typing]);
 
   const updateStepsFromReport = (res: any) => {
@@ -435,6 +440,8 @@ function Page() {
                 </div>
               </div>
             )}
+            {/* Scroll anchor — always at the very bottom */}
+            <div ref={bottomRef} className="h-1" />
           </div>
 
           {/* Composer */}

@@ -11,12 +11,18 @@ LOCAL_DB_FILE = str(pathlib.Path(__file__).parent.parent / "db_fallback.json")
 
 def _load_local_db():
     if not os.path.exists(LOCAL_DB_FILE):
-        return {"patients": {}, "consultations": {}, "timelines": {}}
+        return {"patients": {}, "consultations": {}, "timelines": {}, "medical_records": {}, "ehr_records": {}}
     try:
         with open(LOCAL_DB_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+            data.setdefault("patients", {})
+            data.setdefault("consultations", {})
+            data.setdefault("timelines", {})
+            data.setdefault("medical_records", {})
+            data.setdefault("ehr_records", {})
+            return data
     except Exception:
-        return {"patients": {}, "consultations": {}, "timelines": {}}
+        return {"patients": {}, "consultations": {}, "timelines": {}, "medical_records": {}, "ehr_records": {}}
 
 def _save_local_db(data):
     with open(LOCAL_DB_FILE, "w", encoding="utf-8") as f:
@@ -386,3 +392,75 @@ def upsert_medical_record(patient_id: str, record_data: dict) -> dict:
     db["medical_records"][patient_id] = payload
     _save_local_db(db)
     return payload
+
+
+def save_ehr_record(ehr_data: dict) -> dict:
+    """
+    Saves an EHR record.
+    """
+    e_id = ehr_data.get("id") or str(uuid.uuid4())
+    now_str = datetime.utcnow().isoformat()
+    
+    record = {
+        "id": e_id,
+        "consultation_id": ehr_data.get("consultation_id"),
+        "doctor_id": ehr_data.get("doctor_id"),
+        "audio_transcript": ehr_data.get("audio_transcript", ""),
+        "diagnosis": ehr_data.get("diagnosis", ""),
+        "icd_10_codes": ehr_data.get("icd_10_codes", []),
+        "prescriptions": ehr_data.get("prescriptions", []),
+        "conflict_warnings": ehr_data.get("conflict_warnings", []),
+        "is_draft": ehr_data.get("is_draft", True),
+        "approved_at": ehr_data.get("approved_at"),
+        "discharge_summary_url": ehr_data.get("discharge_summary_url", ""),
+        "created_at": ehr_data.get("created_at") or now_str,
+        "updated_at": now_str,
+        "doctor_analysis": ehr_data.get("doctor_analysis", ""),
+        "clinical_notes": ehr_data.get("clinical_notes", ""),
+        "ai_fields": ehr_data.get("ai_fields", {}),
+        "safety_alerts": ehr_data.get("safety_alerts", {}),
+        "treatment_status": ehr_data.get("treatment_status", "TREATMENT_ONGOING"),
+        "follow_up": ehr_data.get("follow_up", ""),
+        "im_report_data": ehr_data.get("im_report_data", {})
+    }
+    
+    if supabase_client:
+        try:
+            # Check if there is an existing ehr_record for this consultation_id
+            existing = supabase_client.table("ehr_records").select("id").eq("consultation_id", record["consultation_id"]).execute()
+            if existing.data:
+                record["id"] = existing.data[0]["id"]
+            res = supabase_client.table("ehr_records").upsert(record).execute()
+            if res.data:
+                return res.data[0]
+        except Exception as e:
+            print(f"[ERROR] Supabase save_ehr_record failed: {e}. Saving locally.")
+            
+    db = _load_local_db()
+    
+    # Check if there is an existing ehr_record locally for this consultation_id
+    for existing_id, rec in db["ehr_records"].items():
+        if rec.get("consultation_id") == record["consultation_id"]:
+            record["id"] = existing_id
+            break
+            
+    db["ehr_records"][record["id"]] = record
+    _save_local_db(db)
+    return record
+
+
+def get_ehr_record(consultation_id: str) -> dict:
+    if supabase_client:
+        try:
+            res = supabase_client.table("ehr_records").select("*").eq("consultation_id", consultation_id).maybeSingle().execute()
+            if res.data:
+                return res.data
+        except Exception as e:
+            print(f"[ERROR] Supabase get_ehr_record failed: {e}. Querying locally.")
+            
+    db = _load_local_db()
+    for rec in db.get("ehr_records", {}).values():
+        if rec.get("consultation_id") == consultation_id:
+            return rec
+    return None
+

@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth, roleHome, type AppRole } from "@/hooks/use-auth";
+import { useAuth, roleHome } from "@/hooks/use-auth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,12 +9,22 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Loader2, Stethoscope, UserRound, Shield } from "lucide-react";
+import { Loader2, Stethoscope, UserRound } from "lucide-react";
 
 export const Route = createFileRoute("/auth")({
   head: () => ({ meta: [{ title: "Sign in · MediAgent" }] }),
   component: AuthPage,
 });
+
+// ─── Hardcoded admin credentials ───────────────────────────────────────────
+const ADMIN_EMAIL = "admin@mediagent.com";
+const ADMIN_PASSWORD = "Admin@1234";
+const ADMIN_PROFILE = {
+  id: "00000000-0000-0000-0000-000000000001",
+  full_name: "System Admin",
+  email: ADMIN_EMAIL,
+  role: "admin" as const,
+};
 
 function AuthPage() {
   const navigate = useNavigate();
@@ -27,18 +37,26 @@ function AuthPage() {
     }
   }, [session, role, loading, navigate]);
 
-  /* ─── Sign in ─────────────────────────────────────────────────── */
+  /* ─── Sign in ──────────────────────────────────────────────────── */
   const onSignIn = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
-    const email = (fd.get("email") as string).trim();
+    const email = (fd.get("email") as string).trim().toLowerCase();
     const password = fd.get("password") as string;
 
     if (!email || !password) return toast.error("Email and password are required");
     setBusy(true);
 
     try {
-      // Fetch the profile row by email
+      // ── Admin hardcoded check (bypasses DB) ──────────────────────
+      if (email === ADMIN_EMAIL && password === ADMIN_PASSWORD) {
+        const user = login(ADMIN_PROFILE);
+        toast.success("Welcome, System Admin");
+        navigate({ to: roleHome(user.role), replace: true });
+        return;
+      }
+
+      // ── Normal user sign-in ──────────────────────────────────────
       const { data: rows, error } = await supabase
         .from("profiles")
         .select("id, full_name, email, password, role")
@@ -49,8 +67,6 @@ function AuthPage() {
 
       const profile = rows?.[0];
       if (!profile) throw new Error("No account found with that email");
-
-      // Plain string comparison — no hashing
       if (profile.password !== password) throw new Error("Incorrect password");
 
       const user = login(profile);
@@ -63,20 +79,25 @@ function AuthPage() {
     }
   };
 
-  /* ─── Sign up ─────────────────────────────────────────────────── */
+  /* ─── Sign up ──────────────────────────────────────────────────── */
   const onSignUp = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
     const fullName = (fd.get("fullName") as string).trim();
-    const email = (fd.get("email") as string).trim();
+    const email = (fd.get("email") as string).trim().toLowerCase();
     const password = fd.get("password") as string;
     const role = (fd.get("role") as string) || "patient";
 
     if (!email || !password) return toast.error("Email and password are required");
+
+    // Block admin email from being registered
+    if (email === ADMIN_EMAIL) {
+      return toast.error("This email is reserved. Please use a different email.");
+    }
+
     setBusy(true);
 
     try {
-      // Check if email already taken
       const { data: existing } = await supabase
         .from("profiles")
         .select("id")
@@ -85,7 +106,6 @@ function AuthPage() {
 
       if (existing && existing.length > 0) throw new Error("An account with that email already exists");
 
-      // Insert new profile — password stored as plain text
       const { data: rows, error } = await supabase
         .from("profiles")
         .insert({
@@ -146,7 +166,7 @@ function AuthPage() {
               </form>
             </TabsContent>
 
-            {/* ── Sign Up ── */}
+            {/* ── Sign Up — patient & doctor only ── */}
             <TabsContent value="signup">
               <form onSubmit={onSignUp} className="space-y-3 pt-4">
                 <div className="space-y-1.5">
@@ -166,9 +186,12 @@ function AuthPage() {
                   <Select name="role" defaultValue="patient">
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="patient"><div className="flex items-center gap-2"><UserRound className="h-4 w-4" />Patient</div></SelectItem>
-                      <SelectItem value="doctor"><div className="flex items-center gap-2"><Stethoscope className="h-4 w-4" />Doctor</div></SelectItem>
-                      <SelectItem value="admin"><div className="flex items-center gap-2"><Shield className="h-4 w-4" />Admin</div></SelectItem>
+                      <SelectItem value="patient">
+                        <div className="flex items-center gap-2"><UserRound className="h-4 w-4" />Patient</div>
+                      </SelectItem>
+                      <SelectItem value="doctor">
+                        <div className="flex items-center gap-2"><Stethoscope className="h-4 w-4" />Doctor</div>
+                      </SelectItem>
                     </SelectContent>
                   </Select>
                 </div>

@@ -351,6 +351,44 @@ def compile_and_persist_ehr(
         "consult_english_transcript": consultation_output.get("english_transcript", "")
     })
 
+    # Save EHR Record (is_draft = False) to ehr_records table
+    try:
+        doctor_id = consult_row.get("assigned_doctor_id") if consult_row else None
+        prescriptions_list = []
+        for m in final_meds:
+            med_str = f"{m.get('name','')} {m.get('dosage','')}".strip()
+            if m.get('frequency'):
+                med_str += f" {m.get('frequency')}"
+            if m.get('duration'):
+                med_str += f" x {m.get('duration')}"
+            prescriptions_list.append(med_str)
+
+        db.save_ehr_record({
+            "consultation_id": patient_id,
+            "doctor_id": doctor_id,
+            "audio_transcript": consultation_output.get("raw_transcript", ""),
+            "diagnosis": final_diagnosis,
+            "icd_10_codes": [final_icd10] if final_icd10 else [],
+            "prescriptions": prescriptions_list,
+            "conflict_warnings": [safety_audit.get("conflicts")] if safety_audit.get("has_conflict") else [],
+            "is_draft": False,
+            "approved_at": now_ts,
+            "discharge_summary_url": "",
+            "doctor_analysis": doctor_analysis,
+            "clinical_notes": clinical_notes,
+            "ai_fields": {
+                "symptoms": final_symptoms,
+                "differential_diagnoses": patient_intake_output.get("differential_diagnoses", [])
+            },
+            "safety_alerts": [safety_audit] if safety_audit.get("has_conflict") else [],
+            "treatment_status": treatment_status,
+            "follow_up": follow_up_timing,
+            "im_report_data": doc
+        })
+        print("[EHR Agent] EHR record saved successfully.")
+    except Exception as e:
+        print(f"[EHR Agent] WARNING: save_ehr_record failed: {e}")
+
     try:
         db.upsert_medical_record(actual_patient_id, existing)
         print("[EHR Agent] Medical record upserted OK.")

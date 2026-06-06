@@ -27,7 +27,7 @@ function Page() {
     },
   });
 
-  // Fetch ALL consultation intake records — no limit, all patients visible to all doctors
+  // Fetch ALL active consultation intake records — excludes completed
   const { data: allRecords, isLoading } = useQuery({
     queryKey: ["doctor-dashboard-all-records"],
     refetchInterval: 30_000, // refresh every 30s
@@ -35,7 +35,8 @@ function Page() {
       const { data, error } = await supabase
         .from("consultations")
         .select("id, status, severity_score, created_at, patient_id, assigned_doctor_id, chief_complaint, intake_summary, record_name")
-        .order("created_at", { ascending: false });
+        .neq("status", "completed")
+        .order("created_at", { ascending: true }); // oldest first = FIFO queue
       if (error) throw error;
       return data ?? [];
     },
@@ -125,7 +126,7 @@ function Page() {
       status: row.status as string,
       hasIntake,
     };
-  }).sort((a, b) => a.severity - b.severity);
+  }).sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()); // FIFO: oldest first
 
   const doctorName = profile?.full_name
     ? `Dr. ${profile.full_name.replace(/^Dr\.\s*/i, "")}`
@@ -153,7 +154,7 @@ function Page() {
 
         {/* Stats strip */}
         <div className="grid gap-3 grid-cols-2 md:grid-cols-4">
-          <StatTile icon={Activity} label="Total records" value={records.length} />
+          <StatTile icon={Activity} label="Active records" value={records.length} />
           <StatTile icon={FileText} label="With intake" value={records.filter((r) => r.hasIntake).length} />
           <StatTile icon={ScrollText} label="Pending reviews" value={pendingReviews?.length ?? 0} />
           <StatTile icon={CheckCircle2} label="Waiting" value={records.filter((r) => r.status === "waiting").length} tone="success" />

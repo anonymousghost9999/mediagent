@@ -10,27 +10,26 @@ import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/hooks/use-auth";
 import { getPatientProfile } from "@/lib/mediagent/live";
 import { supabase } from "@/integrations/supabase/client";
-import { Pencil, Save, X, Loader2 } from "lucide-react";
+import { Pencil, Save, X, Loader2, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
-import { patient as defaultPatient } from "@/lib/mediagent/data";
 
 export const Route = createFileRoute("/patient/profile")({ component: Page });
 
 const schema = z.object({
-  full_name: z.string().trim().min(1).max(120),
-  email: z.string().trim().email().max(255),
-  mobile: z.string().trim().max(32).optional().or(z.literal("")),
-  dob: z.string().optional().or(z.literal("")),
-  gender: z.string().trim().max(16).optional().or(z.literal("")),
-  address: z.string().trim().max(500).optional().or(z.literal("")),
-  blood_group: z.string().trim().max(8).optional().or(z.literal("")),
-  height_cm: z.coerce.number().min(0).max(260).optional().or(z.literal("" as unknown as number)),
-  weight_kg: z.coerce.number().min(0).max(400).optional().or(z.literal("" as unknown as number)),
-  allergies: z.string().trim().max(500).optional().or(z.literal("")),
-  chronic_conditions: z.string().trim().max(500).optional().or(z.literal("")),
-  emergency_contact: z.string().trim().max(255).optional().or(z.literal("")),
-  insurance_provider: z.string().trim().max(120).optional().or(z.literal("")),
-  insurance_number: z.string().trim().max(64).optional().or(z.literal("")),
+  full_name: z.string().optional().default(""),
+  email: z.string().optional().default(""),
+  mobile: z.string().optional().default(""),
+  dob: z.string().optional().default(""),
+  gender: z.string().optional().default(""),
+  address: z.string().optional().default(""),
+  blood_group: z.string().optional().default(""),
+  height_cm: z.string().optional().default(""),
+  weight_kg: z.string().optional().default(""),
+  allergies: z.string().optional().default(""),
+  chronic_conditions: z.string().optional().default(""),
+  emergency_contact: z.string().optional().default(""),
+  insurance_provider: z.string().optional().default(""),
+  insurance_number: z.string().optional().default(""),
 });
 
 const csv = (a: string[] | null | undefined) => (a ?? []).join(", ");
@@ -41,6 +40,35 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
     <div className="flex justify-between gap-4 py-2 border-b last:border-0 text-sm">
       <span className="text-muted-foreground">{label}</span>
       <span className="font-medium text-right break-all">{value || "—"}</span>
+    </div>
+  );
+}
+
+function F({
+  name, label, type = "text", textarea = false, draft, setDraft,
+}: {
+  name: string;
+  label: string;
+  type?: string;
+  textarea?: boolean;
+  draft: Record<string, string>;
+  setDraft: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <Label className="text-xs">{label}</Label>
+      {textarea ? (
+        <Textarea
+          value={draft[name] ?? ""}
+          onChange={(e) => setDraft((prev) => ({ ...prev, [name]: e.target.value }))}
+        />
+      ) : (
+        <Input
+          type={type}
+          value={draft[name] ?? ""}
+          onChange={(e) => setDraft((prev) => ({ ...prev, [name]: e.target.value }))}
+        />
+      )}
     </div>
   );
 }
@@ -56,22 +84,22 @@ function Page() {
   });
 
   const profile = data?.profile ?? {
-    id: user?.id ?? defaultPatient.id,
-    full_name: defaultPatient.fullName,
-    email: defaultPatient.email,
-    mobile: defaultPatient.mobile,
-    dob: defaultPatient.dob,
-    gender: defaultPatient.gender,
-    address: defaultPatient.address,
-    blood_group: defaultPatient.bloodGroup,
-    height_cm: defaultPatient.heightCm,
-    weight_kg: defaultPatient.weightKg,
-    allergies: defaultPatient.allergies,
-    chronic_conditions: defaultPatient.chronic,
-    emergency_contact: defaultPatient.emergency,
-    insurance_provider: defaultPatient.insurance,
-    insurance_number: defaultPatient.insuranceNumber,
-    mrn: defaultPatient.mrn,
+    id: user?.id ?? "",
+    full_name: user?.full_name ?? "",
+    email: user?.email ?? "",
+    mobile: null,
+    dob: null,
+    gender: null,
+    address: null,
+    blood_group: null,
+    height_cm: null,
+    weight_kg: null,
+    allergies: null,
+    chronic_conditions: null,
+    emergency_contact: null,
+    insurance_provider: null,
+    insurance_number: null,
+    mrn: null,
   };
 
   const [editing, setEditing] = useState(false);
@@ -102,26 +130,22 @@ function Page() {
   const handleSave = async () => {
     try {
       setSaving(true);
-      const parsed = schema.safeParse(draft);
-      if (!parsed.success) throw new Error(parsed.error.issues[0].message);
-      const d = parsed.data;
-
       const { error } = await supabase.from("profiles").upsert({
         id: user!.id,
-        full_name: d.full_name,
-        email: d.email,
-        mobile: d.mobile || null,
-        dob: d.dob || null,
-        gender: d.gender || null,
-        address: d.address || null,
-        blood_group: d.blood_group || null,
-        height_cm: d.height_cm ? Number(d.height_cm) : null,
-        weight_kg: d.weight_kg ? Number(d.weight_kg) : null,
-        allergies: split(d.allergies),
-        chronic_conditions: split(d.chronic_conditions),
-        emergency_contact: d.emergency_contact || null,
-        insurance_provider: d.insurance_provider || null,
-        insurance_number: d.insurance_number || null,
+        full_name: draft.full_name || null,
+        email: draft.email || null,
+        mobile: draft.mobile || null,
+        dob: draft.dob || null,
+        gender: draft.gender || null,
+        address: draft.address || null,
+        blood_group: draft.blood_group || null,
+        height_cm: draft.height_cm ? Number(draft.height_cm) : null,
+        weight_kg: draft.weight_kg ? Number(draft.weight_kg) : null,
+        allergies: split(draft.allergies),
+        chronic_conditions: split(draft.chronic_conditions),
+        emergency_contact: draft.emergency_contact || null,
+        insurance_provider: draft.insurance_provider || null,
+        insurance_number: draft.insurance_number || null,
         role: user?.role || "patient",
       });
       if (error) throw error;
@@ -143,16 +167,8 @@ function Page() {
     ? Math.round((Number(profile.weight_kg) / Math.pow(Number(profile.height_cm) / 100, 2)) * 10) / 10
     : null;
 
-  const F = ({ name, label, type = "text", textarea = false }: { name: string; label: string; type?: string; textarea?: boolean }) => (
-    <div className="space-y-1.5">
-      <Label className="text-xs">{label}</Label>
-      {textarea ? (
-        <Textarea value={draft[name] ?? ""} onChange={(e) => setDraft({ ...draft, [name]: e.target.value })} />
-      ) : (
-        <Input type={type} value={draft[name] ?? ""} onChange={(e) => setDraft({ ...draft, [name]: e.target.value })} />
-      )}
-    </div>
-  );
+
+  const missingFields = !profile.mobile && !profile.dob && !profile.gender;
 
   return (
     <div className="p-6 space-y-6 max-w-5xl">
@@ -160,7 +176,7 @@ function Page() {
         <div>
           <div className="text-xs font-mono uppercase tracking-widest text-muted-foreground">Patient · Profile</div>
           <h1 className="text-2xl font-semibold">{profile.full_name || "Unnamed patient"}</h1>
-          <p className="text-xs text-muted-foreground font-mono">MRN {profile.mrn}</p>
+          <p className="text-xs text-muted-foreground font-mono">MRN {profile.mrn || "—"}</p>
         </div>
         {!editing ? (
           <Button onClick={() => setEditing(true)}><Pencil className="h-4 w-4 mr-1.5" />Edit profile</Button>
@@ -173,6 +189,17 @@ function Page() {
           </div>
         )}
       </header>
+
+      {missingFields && !editing && (
+        <div className="flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4">
+          <AlertCircle className="h-4 w-4 mt-0.5 text-amber-500 shrink-0" />
+          <div className="text-sm">
+            <div className="font-medium text-amber-600 dark:text-amber-400">Profile incomplete</div>
+            <div className="text-muted-foreground text-xs mt-0.5">Complete your profile for more accurate AI consultations — your doctor will see this data.</div>
+          </div>
+          <Button size="sm" variant="outline" className="ml-auto shrink-0" onClick={() => setEditing(true)}>Complete now</Button>
+        </div>
+      )}
 
       {!editing ? (
         <div className="grid gap-4 md:grid-cols-3">
@@ -200,24 +227,24 @@ function Page() {
       ) : (
         <div className="grid gap-4 md:grid-cols-3">
           <Card><CardHeader><CardTitle>Identity</CardTitle></CardHeader><CardContent className="space-y-3">
-            <F name="full_name" label="Full name" />
-            <F name="email" label="Email" type="email" />
-            <F name="mobile" label="Mobile" />
-            <F name="dob" label="Date of birth" type="date" />
-            <F name="gender" label="Gender" />
-            <F name="address" label="Address" textarea />
+            <F name="full_name" label="Full name" draft={draft} setDraft={setDraft} />
+            <F name="email" label="Email" type="email" draft={draft} setDraft={setDraft} />
+            <F name="mobile" label="Mobile" draft={draft} setDraft={setDraft} />
+            <F name="dob" label="Date of birth" type="date" draft={draft} setDraft={setDraft} />
+            <F name="gender" label="Gender" draft={draft} setDraft={setDraft} />
+            <F name="address" label="Address" textarea draft={draft} setDraft={setDraft} />
           </CardContent></Card>
           <Card><CardHeader><CardTitle>Vitals</CardTitle></CardHeader><CardContent className="space-y-3">
-            <F name="blood_group" label="Blood group" />
-            <F name="height_cm" label="Height (cm)" type="number" />
-            <F name="weight_kg" label="Weight (kg)" type="number" />
+            <F name="blood_group" label="Blood group" draft={draft} setDraft={setDraft} />
+            <F name="height_cm" label="Height (cm)" type="number" draft={draft} setDraft={setDraft} />
+            <F name="weight_kg" label="Weight (kg)" type="number" draft={draft} setDraft={setDraft} />
           </CardContent></Card>
           <Card><CardHeader><CardTitle>Clinical</CardTitle></CardHeader><CardContent className="space-y-3">
-            <F name="allergies" label="Allergies (comma-separated)" textarea />
-            <F name="chronic_conditions" label="Chronic conditions (comma-separated)" textarea />
-            <F name="emergency_contact" label="Emergency contact" />
-            <F name="insurance_provider" label="Insurance provider" />
-            <F name="insurance_number" label="Insurance number" />
+            <F name="allergies" label="Allergies (comma-separated)" textarea draft={draft} setDraft={setDraft} />
+            <F name="chronic_conditions" label="Chronic conditions (comma-separated)" textarea draft={draft} setDraft={setDraft} />
+            <F name="emergency_contact" label="Emergency contact" draft={draft} setDraft={setDraft} />
+            <F name="insurance_provider" label="Insurance provider" draft={draft} setDraft={setDraft} />
+            <F name="insurance_number" label="Insurance number" draft={draft} setDraft={setDraft} />
           </CardContent></Card>
         </div>
       )}

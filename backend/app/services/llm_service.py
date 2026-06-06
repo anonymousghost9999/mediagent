@@ -48,9 +48,42 @@ def call_openrouter(messages: list, max_tokens: int = 4000) -> str:
     
     print(f"[OpenRouter API] Sending completion request for model: {payload['model']} with max_tokens: {max_tokens}")
     response = httpx.post(url, headers=headers, json=payload, timeout=45.0)
-    response.raise_for_status()
+
+    # ── Detect specific OpenRouter error codes with clear messages ──────────
+    if not response.is_success:
+        status = response.status_code
+        try:
+            err_body = response.json()
+            err_msg = err_body.get("error", {}).get("message", "") or str(err_body)
+        except Exception:
+            err_msg = response.text or response.reason_phrase
+
+        if status == 429:
+            raise RuntimeError(
+                f"OPENROUTER_RATE_LIMIT: You have hit the API rate limit. "
+                f"Wait a moment and try again. (OpenRouter: {err_msg})"
+            )
+        if status == 402:
+            raise RuntimeError(
+                f"OPENROUTER_QUOTA_EXCEEDED: Your OpenRouter credit balance is exhausted. "
+                f"Top up your credits at openrouter.ai/credits. (OpenRouter: {err_msg})"
+            )
+        if status == 401:
+            raise RuntimeError(
+                f"OPENROUTER_AUTH_FAILED: Invalid or expired API key. "
+                f"Check OPENROUTER_API_KEY in backend/.env. (OpenRouter: {err_msg})"
+            )
+        if status == 503 or status == 502:
+            raise RuntimeError(
+                f"OPENROUTER_MODEL_UNAVAILABLE: The AI model is temporarily unavailable. "
+                f"Try again in a few seconds. (OpenRouter: {err_msg})"
+            )
+        # Generic fallback
+        raise RuntimeError(
+            f"OPENROUTER_ERROR_{status}: {err_msg}"
+        )
+
     res_json = response.json()
-    
     choices = res_json.get("choices", [])
     if not choices:
         raise ValueError(f"OpenRouter API returned empty choices. Full response: {res_json}")

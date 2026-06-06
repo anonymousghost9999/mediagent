@@ -3,7 +3,7 @@ import {
   Outlet, createRootRouteWithContext, useRouter, useRouterState, useNavigate,
   HeadContent, Scripts,
 } from "@tanstack/react-router";
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
@@ -13,6 +13,8 @@ import { AuthProvider, useAuth } from "@/hooks/use-auth";
 import { Toaster } from "@/components/ui/sonner";
 import { Button } from "@/components/ui/button";
 import { LogOut } from "lucide-react";
+import { OnboardingModal } from "@/components/mediagent/onboarding-modal";
+import { supabase } from "@/integrations/supabase/client";
 
 function NotFoundComponent() {
   return (
@@ -88,6 +90,31 @@ function AppFrame() {
   const { session, role, loading, user, signOut } = useAuth();
   const isAuthRoute = pathname === "/auth";
 
+  // Onboarding state
+  const [showOnboarding, setShowOnboarding] = useState(false);
+
+  // Check if onboarding is needed after session loads
+  useEffect(() => {
+    if (loading || !session || !user?.id || !role || isAuthRoute) return;
+    if (role === "admin") return; // admin skip
+    const flag = localStorage.getItem(`mediagent_onboarded_${user.id}`);
+    if (flag) return;
+    // Fetch profile to check completeness
+    supabase
+      .from("profiles")
+      .select("mobile, dob, gender")
+      .eq("id", user.id)
+      .maybeSingle()
+      .then(({ data: prof }) => {
+        if (!prof?.mobile && !prof?.dob && !prof?.gender) {
+          setShowOnboarding(true);
+        } else {
+          // Already has data — mark as onboarded
+          localStorage.setItem(`mediagent_onboarded_${user.id}`, "1");
+        }
+      });
+  }, [loading, session, user?.id, role, isAuthRoute]);
+
   // Guard: any non-auth, non-root route requires a session.
   useEffect(() => {
     if (loading || isAuthRoute || pathname === "/") return;
@@ -109,6 +136,25 @@ function AppFrame() {
   }, [loading, session, role, isAuthRoute, pathname, navigate]);
 
   if (isAuthRoute) return <Outlet />;
+
+  // Render onboarding modal if needed
+  if (showOnboarding && user?.id && (role === "patient" || role === "doctor")) {
+    return (
+      <>
+        <OnboardingModal
+          userId={user.id}
+          role={role as "patient" | "doctor"}
+          open={showOnboarding}
+          onComplete={() => setShowOnboarding(false)}
+        />
+        <SidebarProvider>
+          <div className="min-h-screen flex w-full bg-background opacity-30 pointer-events-none">
+            <main className="flex-1 min-w-0" />
+          </div>
+        </SidebarProvider>
+      </>
+    );
+  }
 
   return (
     <SidebarProvider>

@@ -41,6 +41,9 @@ __pycache__/
 backend/.venv/
 backend/venv/
 backend/.env.local
+.env
+backend/.env
+**/.env
 
 # Runtime data — local JSON DB is not source code
 backend/db_fallback.json
