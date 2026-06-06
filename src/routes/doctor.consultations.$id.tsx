@@ -25,9 +25,9 @@ import type { ReviewStatus } from "@/lib/mediagent/data";
 export const Route = createFileRoute("/doctor/consultations/$id")({ component: Page });
 
 const initialPre = {
-  chiefComplaint: "Wheezing & cough × 2 days, worse at night. Slight exertional dyspnea. No fever.",
-  severity: "3",
-  patientReports: "Inhaler use inconsistent. No ER visits.",
+  chiefComplaint: "",
+  severity: "",
+  patientReports: "",
 };
 
 function Page() {
