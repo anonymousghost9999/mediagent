@@ -1281,7 +1281,6 @@ function Page() {
                 <>
                   <Button size="sm" variant="default" onClick={() => updateField(f.id, "APPROVED")}><Check className="h-3 w-3 mr-1" />Approve</Button>
                   <Button size="sm" variant="outline" onClick={() => setEditing(f.id)}><Pencil className="h-3 w-3 mr-1" />Edit</Button>
-                  <Button size="sm" variant="ghost" onClick={() => updateField(f.id, "REJECTED")}><X className="h-3 w-3 mr-1" />Reject</Button>
                 </>
               )}
             </div>
