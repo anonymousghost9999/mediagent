@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { aiFields, safetyAlerts, patient, timeline, severityLabel, type Severity } from "@/lib/mediagent/data";
-import { StatusPill, DraftBadge } from "@/components/mediagent/badges";
+import { StatusPill } from "@/components/mediagent/badges";
 import { IMReportForm, downloadReportAsPDF } from "@/components/mediagent/im-report-form";
 import { logAudit, treatmentStatuses, treatmentStatusLabel, type TreatmentStatus } from "@/lib/mediagent/store";
 import { getConsultationById } from "@/lib/mediagent/live";
@@ -24,11 +24,6 @@ import type { ReviewStatus } from "@/lib/mediagent/data";
 
 export const Route = createFileRoute("/doctor/consultations/$id")({ component: Page });
 
-const initialPre = {
-  chiefComplaint: "",
-  severity: "",
-  patientReports: "",
-};
 
 function Page() {
   const { id } = Route.useParams();
@@ -62,20 +57,12 @@ function Page() {
   const [editing, setEditing] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
 
-  // Pre-consultation editing
-  const [pre, setPre] = useState(initialPre);
-  const [preEditing, setPreEditing] = useState(false);
-  const [preDraft, setPreDraft] = useState(initialPre);
+
 
   // Voice transcription
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
-  const [transcript, setTranscript] = useState<string[]>([
-    "DOCTOR: Tell me when this started.",
-    "PATIENT: About two days ago, after the dust storm.",
-    "DOCTOR: Have you used the rescue inhaler?",
-    "PATIENT: Yes, three times yesterday.",
-  ]);
+  const [transcript, setTranscript] = useState<string[]>([]);
 
   // Doctor analysis / prescription
   const [analysis, setAnalysis] = useState({
@@ -87,7 +74,7 @@ function Page() {
 
   // IM report
   const [report, setReport] = useState<IMReportData>({
-    chief_complaint: initialPre.chiefComplaint,
+    chief_complaint: "",
     severity: "3 Medium",
   });
 
@@ -120,31 +107,6 @@ function Page() {
 
   }, [id]);
 
-  useEffect(() => {
-    if (data?.consultation) {
-      setPre({
-        chiefComplaint: data.consultation.chief_complaint || data.consultation.intake_english_translation || "No symptoms captured",
-        severity: String(data.consultation.severity_score ?? 3),
-        patientReports: data.consultation.intake_summary || data.consultation.intake_english_translation || "No prior guidance",
-      });
-      return;
-    }
-
-    const stored = localStorage.getItem(`mediagent_report_${id}`);
-    if (stored) {
-      try {
-        const reportData = JSON.parse(stored);
-        setPre({
-          chiefComplaint: reportData.english_translation || "No symptoms captured",
-          // Store the raw ESI score (1 = most critical, 5 = least urgent) directly — no inversion
-          severity: String(reportData.severity_score ?? 3),
-          patientReports: reportData.agent_response_english || "No prior guidance",
-        });
-      } catch (err) {
-        console.error("Failed to parse stored report for pre-consultation", err);
-      }
-    }
-  }, [id, data]);
 
   const updateField = (fid: string, st: ReviewStatus, edit?: string) => {
     setFields((fs) => fs.map((f) => (f.id === fid ? { ...f, status: st, ai: edit ?? f.ai } : f)));
@@ -155,20 +117,6 @@ function Page() {
       entity: `consultation:${id}/field:${fid}`,
       after: edit,
     });
-  };
-
-  const savePre = () => {
-    logAudit({
-      actor: "Dr. Mehta",
-      action: "PRECONSULT_EDITED",
-      entity: `consultation:${id}`,
-      before: pre,
-      after: preDraft,
-      note: "Edited after direct confirmation with patient.",
-    });
-    setPre(preDraft);
-    setPreEditing(false);
-    toast.success("Pre-consultation updated", { description: "Change recorded in audit log." });
   };
 
   const toggleRecording = () => {
@@ -367,12 +315,11 @@ function Page() {
       const intakeData = localStorage.getItem(`mediagent_report_${id}`);
       const intakeReportParsed = intakeData ? JSON.parse(intakeData) : {
         original_language: "en-IN",
-        original_transcript: pre.chiefComplaint,
-        english_translation: pre.chiefComplaint,
-        agent_response_english: pre.patientReports,
-        agent_response_translated: pre.patientReports,
-        // pre.severity is now the raw ESI score — use it directly
-        severity_score: Number(pre.severity)
+        original_transcript: data?.consultation?.chief_complaint || "",
+        english_translation: data?.consultation?.chief_complaint || "",
+        agent_response_english: data?.consultation?.intake_summary || "",
+        agent_response_translated: data?.consultation?.intake_summary || "",
+        severity_score: data?.consultation?.severity_score ?? 3
       };
 
       const diagnosisField = fields.find((f) => f.id === "f1")?.ai || "";
@@ -401,7 +348,7 @@ function Page() {
         diagnosis: diagnosisText,
         icd10_code: icd10Text,
         prescribed_drugs: parsedMeds,
-        symptoms: [pre.chiefComplaint]
+        symptoms: data?.consultation?.symptoms ?? []
       };
 
       const res = await approveConsultation({
@@ -434,8 +381,8 @@ function Page() {
         patientMrn: currentPatient.mrn,
         doctor: "Dr. R. Mehta",
         data: {
-          chief_complaint: pre.chiefComplaint,
-          severity: `${pre.severity} ${severityLabel[Number(pre.severity) as Severity] || "Medium"}`
+          chief_complaint: data?.consultation?.chief_complaint || intakeReport?.primary_issue || "",
+          severity: `${data?.consultation?.severity_score ?? 3} ${severityLabel[(data?.consultation?.severity_score ?? 3) as Severity] || "Medium"}`
         },
         extras: {
           "Doctor analysis": analysis.analysis || "Approved pre-consultation summary",
@@ -656,48 +603,6 @@ function Page() {
           </CardContent>
         </Card>
 
-        {/* Pre-consultation (editable) */}
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle className="text-base">Pre-consultation summary</CardTitle>
-            {!preEditing ? (
-              <Button size="sm" variant="outline" onClick={() => { setPreDraft(pre); setPreEditing(true); }}>
-                <Pencil className="h-3 w-3 mr-1" />Edit
-              </Button>
-            ) : (
-              <div className="flex gap-1.5">
-                <Button size="sm" onClick={savePre}><Save className="h-3 w-3 mr-1" />Save</Button>
-                <Button size="sm" variant="ghost" onClick={() => setPreEditing(false)}>Cancel</Button>
-              </div>
-            )}
-          </CardHeader>
-          <CardContent className="text-sm space-y-2">
-            <DraftBadge />
-            {!preEditing ? (
-              <>
-                <p><b>Chief complaint:</b> {pre.chiefComplaint}</p>
-                <p><b>Severity (ESI):</b> {pre.severity} / 5</p>
-                <p><b>AI Pre-Assessment:</b> {pre.patientReports}</p>
-                <p className="text-[11px] text-muted-foreground pt-1">Confirm with the patient before editing. All changes are recorded in the audit log.</p>
-              </>
-            ) : (
-              <div className="space-y-2">
-                <div>
-                  <Label className="text-xs">Chief complaint</Label>
-                  <Textarea value={preDraft.chiefComplaint} onChange={(e) => setPreDraft({ ...preDraft, chiefComplaint: e.target.value })} />
-                </div>
-                <div>
-                  <Label className="text-xs">Severity (1–5)</Label>
-                  <Input value={preDraft.severity} onChange={(e) => setPreDraft({ ...preDraft, severity: e.target.value })} />
-                </div>
-                <div>
-                  <Label className="text-xs">Patient reports</Label>
-                  <Textarea value={preDraft.patientReports} onChange={(e) => setPreDraft({ ...preDraft, patientReports: e.target.value })} />
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
 
         {/* Transcript */}
         <Card>

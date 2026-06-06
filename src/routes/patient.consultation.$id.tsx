@@ -7,7 +7,6 @@ import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Send, Mic, MicOff, Sparkles, Check, Loader2, ArrowRight, ShieldCheck } from "lucide-react";
 import { postIntake, postIntakeAudio, getPatientTimeline } from "@/lib/api/client";
-import { patient as patientData } from "@/lib/mediagent/data";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/patient/consultation/$id")({
@@ -149,11 +148,11 @@ function Page() {
     try {
       const res = await postIntake({
         patient_id: resolvedId,
-        name: patientData.fullName,
-        age: patientData.age,
-        gender: patientData.gender,
-        allergies: patientData.allergies,
-        medical_history: `${patientData.chronic.join(", ")}. ${patientData.currentMeds.join(", ")}`,
+        name: user?.full_name || user?.email || "Patient",
+        age: 30, // age not stored in profile currently
+        gender: user?.gender || "Other",
+        allergies: user?.allergies || [],
+        medical_history: [...(user?.chronic_conditions || []), ...(user?.current_meds || [])].join(", "),
         symptom_text: userText,
         language: search.lang === "te" ? "telugu" : search.lang === "hi" ? "hindi" : "english",
         mode: search.mode,
@@ -257,11 +256,11 @@ function Page() {
 
     try {
       const formData = new FormData();
-      formData.append("name", patientData.fullName);
-      formData.append("age", String(patientData.age));
-      formData.append("gender", patientData.gender);
-      formData.append("allergies", JSON.stringify(patientData.allergies));
-      formData.append("medical_history", `${patientData.chronic.join(", ")}. ${patientData.currentMeds.join(", ")}`);
+      formData.append("name", user?.full_name || user?.email || "Patient");
+      formData.append("age", "30");
+      formData.append("gender", user?.gender || "Other");
+      formData.append("allergies", JSON.stringify(user?.allergies || []));
+      formData.append("medical_history", [...(user?.chronic_conditions || []), ...(user?.current_meds || [])].join(", "));
       formData.append("language", search.lang === "te" ? "telugu" : search.lang === "hi" ? "hindi" : "english");
       formData.append("patient_id", resolvedId);
       formData.append("audio_file", audioBlob, "intake.wav");
