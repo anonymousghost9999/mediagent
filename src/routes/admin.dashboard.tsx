@@ -40,7 +40,7 @@ function Page() {
         <div className="p-4 border-b font-semibold">Recent audit events</div>
         <table className="w-full text-sm">
           <tbody>
-            {(stats?.audit ?? []).slice(0, 4).map((a, i) => (
+            {(stats?.audit ?? []).slice(0, 4).map((a: any, i: number) => (
               <tr key={i} className="border-t">
                 <td className="p-3 font-mono text-xs text-muted-foreground">{a.created_at?.slice(11, 19)}</td>
                 <td className="p-3">{a.table_name}</td>

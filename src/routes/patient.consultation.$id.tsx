@@ -56,6 +56,87 @@ function Page() {
   const [resolvedId, setResolvedId] = useState(id);
   const [loading, setLoading] = useState(false);
 
+  const handleProceed = async () => {
+    setLoading(true);
+    try {
+      // Fetch latest report from localStorage to ensure we update with the latest fields
+      const stored = localStorage.getItem(`mediagent_report_${resolvedId}`);
+      const res = stored ? JSON.parse(stored) : null;
+      
+      const now = new Date();
+      const dp = now.toISOString().slice(0, 10).replace(/-/g, "");
+      const tp = now.toTimeString().slice(0, 5).replace(":", "");
+      const np = (user?.full_name || user?.email?.split("@")[0] || "patient")
+        .toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+      const fallbackName = `${dp}_${tp}_${np}`;
+
+      // Force update status to waiting in the database
+      const { error } = await supabase
+        .from("consultations")
+        .update({ 
+          status: "waiting",
+          chief_complaint: res?.primary_issue || res?.english_symptoms || "Patient Intake",
+          severity_score: typeof res?.severity_score === "number" ? res.severity_score : 3,
+          intake_summary: stored,
+          intake_original_transcript: res?.original_transcript || "",
+          intake_english_translation: res?.english_symptoms || res?.primary_issue || "",
+          symptoms: JSON.stringify(res?.symptoms ?? [])
+        })
+        .eq("id", resolvedId);
+        
+      if (error) throw error;
+      
+      toast.success("Intake submitted successfully!");
+      
+      // Navigate to report page
+      nav({
+        to: "/patient/consultation/$id/report",
+        params: { id: resolvedId },
+        search: { lang: search.lang, mode: search.mode }
+      });
+    } catch (err: any) {
+      console.error(err);
+      toast.error("Failed to submit intake: " + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRetake = async () => {
+    setLoading(true);
+    try {
+      // Reset consultation status in database
+      const { error } = await supabase
+        .from("consultations")
+        .update({
+          status: "drafting",
+          chief_complaint: "",
+          severity_score: 3,
+          intake_summary: null,
+          intake_original_transcript: "",
+          intake_english_translation: "",
+          symptoms: null
+        })
+        .eq("id", resolvedId);
+        
+      if (error) throw error;
+      
+      // Clear localStorage
+      localStorage.removeItem(`mediagent_report_${resolvedId}`);
+      
+      // Clear local states
+      setMsgs([{ from: "agent", text: getInitialGreeting(search.lang) }]);
+      setSteps(initialSteps);
+      setDraft("");
+      toast.success("Intake reset. You can restart the chat now.");
+    } catch (err: any) {
+      console.error(err);
+      toast.error("Failed to reset intake: " + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -148,7 +229,8 @@ function Page() {
 
     try {
       const res = await postIntake({
-        patient_id: resolvedId,
+        patient_id: user?.id || resolvedId,
+        consultation_id: resolvedId,
         name: patientData.fullName,
         age: patientData.age,
         gender: patientData.gender,
@@ -181,7 +263,6 @@ function Page() {
         intake_english_translation: res.english_symptoms || res.primary_issue || userText,
         symptoms: JSON.stringify(res.symptoms ?? []),
         status: res.is_intake_complete ? "waiting" : "drafting",
-        record_name: fallbackName,
       }).eq("id", resolvedId).then(({ error }) => {
         if (error) console.warn("[intake] Supabase update failed (non-blocking):", error.message);
       });
@@ -263,7 +344,8 @@ function Page() {
       formData.append("allergies", JSON.stringify(patientData.allergies));
       formData.append("medical_history", `${patientData.chronic.join(", ")}. ${patientData.currentMeds.join(", ")}`);
       formData.append("language", search.lang === "te" ? "telugu" : search.lang === "hi" ? "hindi" : "english");
-      formData.append("patient_id", resolvedId);
+      formData.append("patient_id", user?.id || resolvedId);
+      formData.append("consultation_id", resolvedId);
       formData.append("audio_file", audioBlob, "intake.wav");
 
       const res = await postIntakeAudio(formData);
@@ -289,7 +371,6 @@ function Page() {
         intake_english_translation: res.english_symptoms || res.primary_issue || "",
         symptoms: JSON.stringify(res.symptoms ?? []),
         status: res.is_intake_complete ? "waiting" : "drafting",
-        record_name: `${dp2}_${tp2}_${np2}`,
       }).eq("id", resolvedId).then(({ error }) => {
         if (error) console.warn("[intake-audio] Supabase update failed (non-blocking):", error.message);
       });
@@ -326,6 +407,8 @@ function Page() {
   };
 
   const allDone = steps.every((s) => s.state === "done");
+  // Show Proceed/Retake panel when intake is complete OR when at least one user message has been sent
+  const canProceed = allDone || msgs.filter((m) => m.from === "patient").length > 0;
 
   return (
     <div className="min-h-full bg-background">
@@ -420,19 +503,33 @@ function Page() {
             </ol>
           </div>
 
-          {allDone && (
-            <Link
-              to="/patient/consultation/$id/report"
-              params={{ id: resolvedId }}
-              search={{ lang: search.lang, mode: search.mode }}
-              className="soft-card ai-glow block p-5 hover:-translate-y-0.5 transition"
-            >
-              <div className="text-xs uppercase tracking-wider text-accent font-medium">Ready</div>
-              <div className="font-semibold mt-1">View pre-consultation report</div>
-              <div className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
-                Open report <ArrowRight className="h-3 w-3" />
+          {canProceed && (
+            <div className="soft-card ai-glow p-5 space-y-4">
+              <div className="text-xs uppercase tracking-wider text-accent font-medium">{allDone ? "Ready" : "In Progress"}</div>
+              <div className="font-semibold text-base">{allDone ? "Intake Complete" : "Save or Reset Chat"}</div>
+              <p className="text-xs text-muted-foreground">
+                {allDone
+                  ? "Your symptoms and clinical details have been analyzed. Proceed to save your record or retake to reset."
+                  : "You can submit the current chat to the doctor or retake to start fresh."}
+              </p>
+              <div className="flex flex-col gap-2">
+                <Button
+                  onClick={handleProceed}
+                  disabled={loading}
+                  className="w-full flex items-center justify-center gap-1.5 py-2 text-xs"
+                >
+                  {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <>Proceed to Report <ArrowRight className="h-3.5 w-3.5" /></>}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={handleRetake}
+                  disabled={loading}
+                  className="w-full py-2 text-xs"
+                >
+                  Retake Chat / Reset
+                </Button>
               </div>
-            </Link>
+            </div>
           )}
 
           <button

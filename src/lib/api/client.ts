@@ -7,6 +7,7 @@ export const API_BASE_URL =
 
 export type PatientIntakeRequest = {
   patient_id?: string;
+  consultation_id?: string;
   name: string;
   age: number;
   gender: string;

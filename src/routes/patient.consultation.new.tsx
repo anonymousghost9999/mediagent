@@ -34,9 +34,10 @@ function Page() {
         .toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
       const record_name = `${datePart}_${timePart}_${namePart}`;
 
+      const newId = crypto.randomUUID();
       const { data, error } = await supabase
         .from("consultations")
-        .insert({ patient_id: user.id, status: "drafting", severity_score: 3, record_name })
+        .insert({ id: newId, patient_id: user.id, status: "drafting", severity_score: 3, record_name })
         .select("id")
         .single();
       if (error) throw error;

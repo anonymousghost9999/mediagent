@@ -33,6 +33,7 @@ app.add_middleware(
 # Define request models
 class PatientIntakeRequest(BaseModel):
     patient_id: Optional[str] = None
+    consultation_id: Optional[str] = None
     name: str
     age: int
     gender: str
@@ -86,6 +87,7 @@ async def patient_intake(req: PatientIntakeRequest):
         
         report = orch.orchestrate_patient_intake(
             patient_id=p_id,
+            consultation_id=req.consultation_id,
             name=req.name,
             age=req.age,
             gender=req.gender,
@@ -109,6 +111,7 @@ async def patient_intake_audio(
     medical_history: str = Form(""),
     language: str = Form("english"),
     patient_id: Optional[str] = Form(None),
+    consultation_id: Optional[str] = Form(None),
     audio_file: UploadFile = File(...)
 ):
     """
@@ -128,6 +131,7 @@ async def patient_intake_audio(
         
         report = orch.orchestrate_patient_intake(
             patient_id=p_id,
+            consultation_id=consultation_id,
             name=name,
             age=age,
             gender=gender,

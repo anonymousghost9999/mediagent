@@ -5,13 +5,14 @@ import app.services.ehr_agent as ehr_agent
 
 def orchestrate_patient_intake(
     patient_id: str,
-    name: str,
-    age: int,
-    gender: str,
-    allergies: list,
-    medical_history: str,
-    input_type: str,  # 'text', 'audio', 'image'
-    input_data: bytes,
+    consultation_id: str = None,
+    name: str = "",
+    age: int = 0,
+    gender: str = "",
+    allergies: list = None,
+    medical_history: str = "",
+    input_type: str = "text",  # 'text', 'audio', 'image'
+    input_data: bytes = b"",
     language: str = "english",
     mode: str = "chat"
 ) -> dict:
@@ -19,7 +20,9 @@ def orchestrate_patient_intake(
     Step 1: Patient Opens App & Completes Intake.
     Saves patient basic profile, runs the Patient Agent, and appends intake data to timeline.
     """
-    print(f"[Orchestrator] Starting Intake Stage for Patient ID: {patient_id}")
+    if allergies is None:
+        allergies = []
+    print(f"[Orchestrator] Starting Intake Stage for Patient ID: {patient_id}, Consultation ID: {consultation_id}")
     
     # Save the initial patient profile to the database
     patient_profile = db.save_patient({
@@ -36,6 +39,7 @@ def orchestrate_patient_intake(
     # Call the Patient Agent
     intake_report = patient_agent.run_patient_intake(
         patient_id=patient_id,
+        consultation_id=consultation_id,
         input_type=input_type,
         input_data=input_data,
         language=language,

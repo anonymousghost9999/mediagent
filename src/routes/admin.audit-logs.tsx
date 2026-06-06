@@ -30,7 +30,7 @@ function Page() {
             </tr>
           </thead>
           <tbody>
-            {(entries ?? []).map((a) => (
+            {(entries ?? []).map((a: any) => (
               <tr key={a.id} className="border-t align-top">
                 <td className="p-3 font-mono text-xs text-muted-foreground">{a.id}</td>
                 <td className="p-3 font-mono text-xs">{a.created_at?.slice(11, 19)}</td>

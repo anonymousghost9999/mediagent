@@ -5,6 +5,7 @@ def run_patient_intake(
     patient_id: str,
     input_type: str,
     input_data: bytes,
+    consultation_id: str = None,
     language: str = "english",
     mode: str = "chat"
 ) -> dict:
@@ -122,15 +123,39 @@ def run_patient_intake(
     patient["status"] = "waiting"
     db.save_patient(patient)
     
+    # Resolve the consultation record ID:
+    # - If a consultation_id was passed (created on the frontend), use it.
+    # - Otherwise fall back to patient_id (legacy behaviour for non-Supabase flows).
+    c_id = consultation_id or patient_id
+    
+    import json
     # Save/update consultation details in DB
-    consult = db.get_consultation(patient_id) or {}
+    # Build the intake summary as a JSON blob so the doctor workspace can parse it
+    intake_summary_json = json.dumps({
+        "primary_issue": clinical_analysis.get("primary_issue", ""),
+        "english_symptoms": english_translation,
+        "severity_score": clinical_analysis.get("severity_score", 3),
+        "triage_rationale": clinical_analysis.get("triage_rationale", ""),
+        "organ_system": clinical_analysis.get("organ_system", ""),
+        "differential_diagnoses": clinical_analysis.get("differential_diagnoses", []),
+        "symptoms": clinical_analysis.get("symptoms", []),
+        "duration": clinical_analysis.get("duration", ""),
+        "previous_medication": clinical_analysis.get("previous_medication", ""),
+        "allergies": clinical_analysis.get("allergies", ""),
+        "chronic_diseases": clinical_analysis.get("chronic_diseases", ""),
+        "is_intake_complete": clinical_analysis.get("is_intake_complete", False),
+        "health_guidance": health_guidance_english,
+        "original_transcript": original_transcript,
+    }, ensure_ascii=False)
+    
+    consult = db.get_consultation(c_id) or {}
     consult.update({
-        "id": patient_id,
-        "patient_id": consult.get("patient_id") or patient_id,
-        "status": "waiting",
+        "id": c_id,
+        "patient_id": patient_id,
+        "status": "waiting" if clinical_analysis.get("is_intake_complete") else consult.get("status", "drafting"),
         "severity_score": clinical_analysis.get("severity_score", 3),
         "chief_complaint": clinical_analysis.get("primary_issue") or english_translation,
-        "intake_summary": health_guidance_english,
+        "intake_summary": intake_summary_json,
         "original_language": bcp47,
         "intake_original_transcript": original_transcript,
         "intake_english_translation": english_translation,

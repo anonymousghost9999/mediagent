@@ -73,7 +73,6 @@ function Page() {
     insurance_number: defaultPatient.insuranceNumber,
     mrn: defaultPatient.mrn,
   };
-  const details = data?.details;
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Record<string, string>>({});
@@ -88,7 +87,7 @@ function Page() {
         dob: profile.dob ?? "",
         gender: profile.gender ?? "",
         address: profile.address ?? "",
-        blood_group: profile.blood_group ?? details?.blood_group ?? "",
+        blood_group: profile.blood_group ?? "",
         height_cm: profile.height_cm?.toString() ?? "",
         weight_kg: profile.weight_kg?.toString() ?? "",
         allergies: csv(profile.allergies),
@@ -186,7 +185,7 @@ function Page() {
             <Row label="Address" value={profile.address} />
           </CardContent></Card>
           <Card><CardHeader><CardTitle>Vitals</CardTitle></CardHeader><CardContent>
-            <Row label="Blood group" value={profile.blood_group ?? details?.blood_group} />
+            <Row label="Blood group" value={profile.blood_group} />
             <Row label="Height" value={profile.height_cm ? `${profile.height_cm} cm` : "—"} />
             <Row label="Weight" value={profile.weight_kg ? `${profile.weight_kg} kg` : "—"} />
             <Row label="BMI" value={bmi ?? "—"} />

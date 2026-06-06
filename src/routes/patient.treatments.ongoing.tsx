@@ -31,7 +31,7 @@ function Page() {
               <div className="flex items-center gap-2">
                 <StatusPill status={t.status as any} />
                 <span className="chip bg-accent-soft border border-accent/50">
-                  {treatmentStatusLabel[t.treatmentStatus]}
+                  {treatmentStatusLabel[t.treatmentStatus as TreatmentStatus]}
                 </span>
               </div>
             </div>

@@ -2,7 +2,6 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/use-auth";
 import { supabase } from "@/integrations/supabase/client";
-import { safetyAlerts } from "@/lib/mediagent/data";
 import { SeverityChip } from "@/components/mediagent/badges";
 import {
   ArrowRight, AlertTriangle, Clock, Sparkles, ShieldAlert,
@@ -35,7 +34,7 @@ function Page() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("consultations")
-        .select("id, status, severity_score, created_at, patient_id, assigned_doctor_id, record_name, chief_complaint, intake_summary")
+        .select("id, status, severity_score, created_at, patient_id, assigned_doctor_id, chief_complaint, intake_summary, record_name")
         .order("created_at", { ascending: false });
       if (error) throw error;
       return data ?? [];
@@ -70,9 +69,36 @@ function Page() {
     },
   });
 
+  const { data: ehrAlerts } = useQuery({
+    queryKey: ["doctor-dashboard-safety-alerts"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("ehr_records")
+        .select("id, safety_alerts")
+        .not("safety_alerts", "is", null);
+      if (error) throw error;
+      return data ?? [];
+    }
+  });
+
+  const alerts = (ehrAlerts ?? [])
+    .flatMap((e) => {
+      try {
+        if (!e.safety_alerts) return [];
+        const parsed = typeof e.safety_alerts === "string" ? JSON.parse(e.safety_alerts) : e.safety_alerts;
+        if (Array.isArray(parsed)) return parsed;
+        if (parsed && typeof parsed === "object") return [parsed];
+      } catch { }
+      return [];
+    })
+    .map((a: any) => ({
+      level: a.level || a.severity || "MEDIUM",
+      msg: a.msg || a.description || "Drug safety warning."
+    }));
+
   const profileById = new Map((patientProfiles ?? []).map((p) => [p.id, p]));
 
-  // Enrich records with patient name
+  // Enrich records with patient name and sort by severity ascending (1 = Resuscitation is highest priority)
   const records = (allRecords ?? []).map((row) => {
     const pat = profileById.get(row.patient_id as string);
     const patName = pat?.full_name ?? pat?.email?.split("@")[0] ?? "Unknown patient";
@@ -89,17 +115,17 @@ function Page() {
       id: row.id,
       patient: patName,
       patientId: row.patient_id,
-      severity: (Number(row.severity_score ?? 1)) as 1 | 2 | 3 | 4 | 5,
+      severity: (Number(row.severity_score ?? 3)) as 1 | 2 | 3 | 4 | 5,
       complaint: complaint || "Intake pending…",
       waited: row.created_at
         ? `${Math.max(1, Math.round((Date.now() - new Date(row.created_at as string).getTime()) / 60000))}m`
         : "—",
       createdAt: row.created_at as string,
-      recordName: (row.record_name as string | null) || row.id,
+      recordName: (row.record_name as string | null) || row.id.slice(0, 8),
       status: row.status as string,
       hasIntake,
     };
-  });
+  }).sort((a, b) => a.severity - b.severity);
 
   const doctorName = profile?.full_name
     ? `Dr. ${profile.full_name.replace(/^Dr\.\s*/i, "")}`
@@ -233,17 +259,23 @@ function Page() {
               <h2 className="text-sm font-semibold flex items-center gap-2">
                 <ShieldAlert className="h-4 w-4 text-destructive" /> AI alerts
               </h2>
-              {safetyAlerts.map((a, i) => (
-                <div key={i} className={`soft-card p-3 ${a.level === "HIGH" ? "border-destructive/30 bg-destructive/5" : ""}`}>
-                  <div className="flex items-start gap-2">
-                    <AlertTriangle className={`h-4 w-4 mt-0.5 ${a.level === "HIGH" ? "text-destructive" : "text-warning"}`} />
-                    <div className="text-xs">
-                      <div className="font-medium uppercase tracking-wider mb-0.5">{a.level} risk</div>
-                      <div className="text-foreground/80 leading-relaxed">{a.msg}</div>
+              {alerts.length === 0 ? (
+                <div className="soft-card p-4 text-center text-xs text-muted-foreground bg-muted/20 border-dashed border">
+                  No active medication safety alerts.
+                </div>
+              ) : (
+                alerts.map((a, i) => (
+                  <div key={i} className={`soft-card p-3 ${(a.level || "").toUpperCase() === "HIGH" || (a.level || "").toUpperCase() === "CRITICAL" ? "border-destructive/30 bg-destructive/5" : ""}`}>
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className={`h-4 w-4 mt-0.5 ${(a.level || "").toUpperCase() === "HIGH" || (a.level || "").toUpperCase() === "CRITICAL" ? "text-destructive" : "text-warning"}`} />
+                      <div className="text-xs">
+                        <div className="font-medium uppercase tracking-wider mb-0.5">{a.level} risk</div>
+                        <div className="text-foreground/80 leading-relaxed">{a.msg}</div>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                ))
+              )}
               <Link to="/doctor/reviews" className="soft-card p-3 flex items-center justify-between hover:border-accent/40 transition">
                 <div>
                   <div className="text-xs uppercase tracking-wider text-muted-foreground">Pending reviews</div>

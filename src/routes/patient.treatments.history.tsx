@@ -36,14 +36,14 @@ function Page() {
           </thead>
           <tbody>
             {(historyList ?? []).map((h) => (
-              <tr key={h.id} className="border-t hover:bg-muted/30">
+              <tr key={h.consultation.id} className="border-t hover:bg-muted/30">
                 <td className="p-3 font-mono">{h.date}</td>
                 <td className="p-3">{h.doctor}</td>
                 <td className="p-3">{h.title}</td>
                 <td className="p-3 text-muted-foreground">{treatmentStatusLabel.TREATMENT_ONGOING}</td>
                 <td className="p-3 text-right">
                   <Button asChild size="sm" variant="ghost">
-                    <Link to="/patient/treatments/history/$id" params={{ id: h.id }}>
+                    <Link to="/patient/treatments/history/$id" params={{ id: h.consultation.id }}>
                       Details <ChevronRight className="h-3.5 w-3.5 ml-1" />
                     </Link>
                   </Button>

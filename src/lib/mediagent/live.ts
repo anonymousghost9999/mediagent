@@ -221,20 +221,20 @@ export async function getDoctorQueue() {
 
   const { data, error } = await supabase
     .from("consultations")
-    .select("id,patient_id,status,severity_score,created_at,assigned_doctor_id,record_name,chief_complaint")
+    .select("id,patient_id,status,severity_score,created_at,assigned_doctor_id,chief_complaint")
     .order("severity_score", { ascending: false })
     .order("created_at", { ascending: false })
     .limit(50);
   if (error) throw error;
   const consultations = data ?? [];
-  const patientIds = consultations.map((row) => row.patient_id).filter(Boolean);
+  const patientIds = consultations.map((row) => row.patient_id).filter(Boolean) as string[];
   const { data: profiles } = patientIds.length
     ? await supabase.from("profiles").select("id,full_name").in("id", patientIds)
     : { data: [] };
   const nameById = new Map((profiles ?? []).map((row) => [row.id, row.full_name]));
   return consultations.map((row) => ({
     id: row.id,
-    patient: nameById.get(row.patient_id) ?? row.patient_id?.slice(0, 8) ?? "Unknown",
+    patient: nameById.get(row.patient_id ?? "") ?? row.patient_id?.slice(0, 8) ?? "Unknown",
     severity: Number(row.severity_score ?? 1),
     complaint: (row.chief_complaint as string | null) || (row.status ? `${row.status.replaceAll("_", " ").toLowerCase()} · consultation` : "Live consultation"),
     waited: row.created_at ? `${Math.max(1, Math.round((Date.now() - new Date(row.created_at).getTime()) / 60000))}m` : "—",
@@ -242,7 +242,7 @@ export async function getDoctorQueue() {
     patient_id: row.patient_id,
     assigned_doctor_id: row.assigned_doctor_id,
     status: row.status,
-    record_name: (row.record_name as string | null) || row.id,
+    record_name: row.id,
   }));
 }
 
@@ -264,19 +264,19 @@ export async function getDoctorReviews() {
     .order("created_at", { ascending: false });
   if (error) throw error;
   const ehrs = (data ?? []).filter((row) => row.is_draft);
-  const consultationIds = ehrs.map((row) => row.consultation_id);
+  const consultationIds = ehrs.map((row) => row.consultation_id).filter(Boolean) as string[];
   const { data: consultations } = consultationIds.length
     ? await supabase.from("consultations").select("id,patient_id").in("id", consultationIds)
     : { data: [] };
-  const patientIds = (consultations ?? []).map((row) => row.patient_id);
+  const patientIds = (consultations ?? []).map((row) => row.patient_id).filter(Boolean) as string[];
   const { data: profiles } = patientIds.length
     ? await supabase.from("profiles").select("id,full_name").in("id", patientIds)
     : { data: [] };
   const nameById = new Map((profiles ?? []).map((row) => [row.id, row.full_name]));
-  const consultById = new Map((consultations ?? []).map((row) => [row.id, row.patient_id]));
+  const consultById = new Map((consultations ?? []).map((row) => [row.id as string, row.patient_id as string | null]));
   return ehrs.map((row) => ({
     id: String(row.id),
-    patient: nameById.get(consultById.get(row.consultation_id)) ?? consultById.get(row.consultation_id)?.slice(0, 8) ?? "Unknown",
+    patient: nameById.get(consultById.get(row.consultation_id ?? "") ?? "") ?? consultById.get(row.consultation_id ?? "")?.slice(0, 8) ?? "Unknown",
     type: row.diagnosis ? "Consultation Report" : "Draft",
     status: row.is_draft ? "PENDING_REVIEW" : "APPROVED",
   }));
@@ -407,7 +407,22 @@ export async function getConsultationById(id: string) {
         status: "waiting",
         severity_score: 3,
         created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
+        updated_at: new Date().toISOString(),
+        chief_complaint: null,
+        intake_summary: null,
+        follow_up_recommendation: null,
+        completed_at: null,
+        symptoms: null,
+        diagnosis: null,
+        icd10_code: null,
+        transcript: null,
+        medications: null,
+        doctor_notes: null,
+        original_language: null,
+        intake_original_transcript: null,
+        intake_english_translation: null,
+        consult_original_transcript: null,
+        consult_english_transcript: null,
       },
       ehr: null,
       profile: {

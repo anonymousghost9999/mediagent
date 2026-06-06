@@ -27,21 +27,7 @@ function Page() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("profiles")
-        .select("id, full_name, email, mrn, mobile, blood_group, height_cm, weight_kg")
-        .eq("id", user!.id)
-        .maybeSingle();
-      if (error) throw error;
-      return data;
-    },
-  });
-
-  const { data: patientDetails } = useQuery({
-    queryKey: ["patient-dashboard-details", user?.id],
-    enabled: !!user,
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("patient_details")
-        .select("date_of_birth, gender, blood_group, chronic_conditions, known_allergies")
+        .select("id, full_name, email, mrn, mobile, blood_group, height_cm, weight_kg, dob, gender, chronic_conditions, allergies")
         .eq("id", user!.id)
         .maybeSingle();
       if (error) throw error;
