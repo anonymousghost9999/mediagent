@@ -48,42 +48,67 @@ def orchestrate_patient_intake(
 def orchestrate_start_consultation(patient_id: str) -> dict:
     """
     Step 2: Doctor opens the case on dashboard and starts recording.
-    Updates state in DB to 'in_consultation' and writes timeline start marker.
+    The frontend sends the CONSULTATION ID (not patient profile ID).
+    We try to update the consultation status and write a timeline event.
+    Falls back gracefully if the record doesn't exist in the local DB.
     """
     print(f"[Orchestrator] Consultation Started by Doctor for Patient ID: {patient_id}")
-    
-    patient = db.get_patient(patient_id)
-    if not patient:
-        raise ValueError(f"Patient with ID {patient_id} does not exist.")
-        
-    patient["status"] = "in_consultation"
-    db.save_patient(patient)
-    
-    event = db.add_timeline_event(patient_id, "consultation_started", {
-        "status": "in_progress"
-    })
-    
+
+    # The frontend sends consultation_id. Try to find the consultation row first.
+    consult = db.get_consultation(patient_id)
+    if consult:
+        # patient_id field inside the consultation row holds the actual profile UUID
+        actual_patient_id = consult.get("patient_id") or patient_id
+        patient = db.get_patient(actual_patient_id)
+    else:
+        # Maybe a patient profile ID was passed — try direct lookup
+        patient = db.get_patient(patient_id)
+        actual_patient_id = patient_id
+
+    # Update patient status if found
+    if patient:
+        patient["status"] = "in_consultation"
+        db.save_patient(patient)
+
+    # Always write a timeline event (best-effort)
+    try:
+        event = db.add_timeline_event(actual_patient_id, "consultation_started", {
+            "status": "in_progress"
+        })
+    except Exception as e:
+        print(f"[WARNING] Timeline event failed (non-blocking): {e}")
+        event = {"status": "in_progress"}
+
     return {"status": "in_consultation", "timeline_event": event}
 
 def orchestrate_dialogue_processing(patient_id: str, audio_data: bytes, is_text_notes: bool = False) -> dict:
     """
     Step 3: Doctor ends recording. Dialogue transcript is converted to structured clinical facts.
+    The frontend may send a consultation_id as patient_id, so we resolve language from
+    the consultation row first, then fall back to the patient profile.
     """
     print(f"[Orchestrator] Processing dialogue for Patient ID: {patient_id}")
-    
-    # Fetch patient language from DB to guide speech recognition BCP-47 mapping
+
     language = "english"
-    patient = db.get_patient(patient_id)
+
+    # Try consultation lookup first (frontend sends consultation_id)
+    consult = db.get_consultation(patient_id)
+    if consult:
+        actual_patient_id = consult.get("patient_id") or patient_id
+        patient = db.get_patient(actual_patient_id)
+    else:
+        patient = db.get_patient(patient_id)
+
     if patient:
         language = patient.get("language", "english")
-        
+
     # Call the Consultation Agent passing the resolved language
     consult_draft = consultation_agent.process_consultation(
         audio_data=audio_data,
         is_text_notes=is_text_notes,
         language=language
     )
-    
+
     return consult_draft
 
 def orchestrate_finalize_consultation(

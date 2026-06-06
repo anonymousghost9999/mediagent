@@ -14,7 +14,7 @@ import { IMReportForm, downloadReportAsPDF } from "@/components/mediagent/im-rep
 import { logAudit, treatmentStatuses, treatmentStatusLabel, type TreatmentStatus } from "@/lib/mediagent/store";
 import { getConsultationById } from "@/lib/mediagent/live";
 import type { IMReportData } from "@/lib/mediagent/im-report";
-import { startConsultation, transcribeConsultation, approveConsultation, getSessionSummary, type SessionSummary } from "@/lib/api/client";
+import { startConsultation, transcribeConsultation, extractTextConsultation, approveConsultation, getSessionSummary, type SessionSummary } from "@/lib/api/client";
 import {
   AlertTriangle, Check, Pencil, X, ShieldCheck, Mic, MicOff, Save, Download, FileText, Loader2,
   Activity, Brain, ListChecks, User, Flag, Stethoscope, ClipboardList, Clock, Pill,
@@ -100,8 +100,8 @@ function Page() {
   const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
 
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const liveTranscriptRef = useRef<string[]>([]);  // accumulates final lines for backend
   const hasStartedRef = useRef(false);
 
   // Trigger startConsultation on first mount only (guarded with ref to prevent re-calls on re-render)
@@ -171,53 +171,96 @@ function Page() {
     toast.success("Pre-consultation updated", { description: "Change recorded in audit log." });
   };
 
-  const toggleRecording = async () => {
+  const toggleRecording = () => {
     if (recording) {
-      if (mediaRecorderRef.current) {
-        mediaRecorderRef.current.stop();
-        mediaRecorderRef.current.stream.getTracks().forEach((track) => track.stop());
+      // ── Stop live transcription ──────────────────────────────────────────
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+        recognitionRef.current = null;
       }
       setRecording(false);
       logAudit({ actor: "Dr. Mehta", action: "TRANSCRIPTION_STOPPED", entity: `consultation:${id}` });
-      toast.info("Voice transcription stopped. Processing recording...");
-    } else {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const mediaRecorder = new MediaRecorder(stream);
-        mediaRecorderRef.current = mediaRecorder;
-        audioChunksRef.current = [];
-
-        mediaRecorder.ondataavailable = (event) => {
-          if (event.data.size > 0) {
-            audioChunksRef.current.push(event.data);
-          }
-        };
-
-        mediaRecorder.onstop = async () => {
-          const audioBlob = new Blob(audioChunksRef.current, { type: "audio/wav" });
-          await uploadConsultationAudio(audioBlob);
-        };
-
-        mediaRecorder.start();
-        setRecording(true);
-        logAudit({ actor: "Dr. Mehta", action: "TRANSCRIPTION_STARTED", entity: `consultation:${id}` });
-        toast.success("Voice transcription started", { description: "Listening to consultation…" });
-      } catch (err) {
-        console.error("Mic access failed", err);
-        toast.error("Microphone access failed.");
+      // Send accumulated transcript text to backend for clinical extraction
+      const fullText = liveTranscriptRef.current.join("\n");
+      if (fullText.trim().length > 0) {
+        toast.info("Consultation ended. Extracting clinical facts...");
+        processLiveTranscript(fullText);
+      } else {
+        toast.warning("No speech was captured during this session.");
       }
+    } else {
+      // ── Start live transcription via Web Speech API ───────────────────────
+      const SpeechRecognition =
+        (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        toast.error("Live transcription not supported in this browser. Use Chrome or Edge.");
+        return;
+      }
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = "en-US";
+      recognitionRef.current = recognition;
+      liveTranscriptRef.current = [];
+
+      let interimLine = "";
+
+      recognition.onresult = (event: SpeechRecognitionEvent) => {
+        let interim = "";
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const text = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            const line = text.trim();
+            if (line) {
+              liveTranscriptRef.current.push(line);
+              setTranscript((prev) => {
+                const filtered = prev.filter((l) => !l.startsWith("…"));
+                return [...filtered, line];
+              });
+            }
+          } else {
+            interim = text;
+          }
+        }
+        if (interim) {
+          setTranscript((prev) => {
+            const filtered = prev.filter((l) => !l.startsWith("…"));
+            return [...filtered, `… ${interim}`];
+          });
+        }
+      };
+
+      recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+        console.error("Speech recognition error:", event.error);
+        if (event.error === "no-speech") return; // ignore silence gaps
+        if (event.error === "not-allowed") {
+          toast.error("Microphone permission denied.");
+          setRecording(false);
+        }
+      };
+
+      recognition.onend = () => {
+        // Auto-restart if still in recording mode (handles browser auto-stop after silence)
+        if (recognitionRef.current) {
+          try { recognitionRef.current.start(); } catch (_) {}
+        }
+      };
+
+      // Clear placeholder transcript on first real start
+      setTranscript([]);
+      liveTranscriptRef.current = [];
+      recognition.start();
+      setRecording(true);
+      logAudit({ actor: "Dr. Mehta", action: "TRANSCRIPTION_STARTED", entity: `consultation:${id}` });
+      toast.success("Live transcription started", { description: "Speak clearly — transcript updates in real-time." });
     }
   };
 
-  const uploadConsultationAudio = async (audioBlob: Blob) => {
+  const processLiveTranscript = async (fullText: string) => {
     setTranscribing(true);
-    const toastId = toast.loading("Transcribing and extracting clinical facts...");
+    const toastId = toast.loading("Extracting clinical facts from transcript...");
     try {
-      const formData = new FormData();
-      formData.append("patient_id", id);
-      formData.append("audio_file", audioBlob, "consultation.wav");
-
-      const res = await transcribeConsultation(formData);
+      const res = await extractTextConsultation(id, fullText);
       setLiveConsultationOutput(res);
 
       toast.success("Dialogue transcribed and clinical summary extracted!", { id: toastId });
@@ -246,6 +289,34 @@ function Page() {
           return {
             ...f,
             ai: medsStr,
+            status: "PENDING_REVIEW"
+          };
+        }
+        if (f.id === "f3") {
+          const fu = res.follow_up;
+          let followUpStr = "No follow-up discussed.";
+          if (fu) {
+            followUpStr = fu.timing || "";
+            if (fu.conditions) followUpStr += ` · Return earlier if: ${fu.conditions}`;
+            if (fu.instructions) followUpStr += ` · ${fu.instructions}`;
+          }
+          return {
+            ...f,
+            ai: followUpStr,
+            status: "PENDING_REVIEW"
+          };
+        }
+        if (f.id === "f4") {
+          const items = res.tests_and_investigations ?? res.tests_ordered ?? [];
+          const testsStr = items.length > 0
+            ? items.map((t: any) => {
+                const badge = t.type === "performed" ? "[Performed]" : "[Ordered]";
+                return t.result ? `${badge} ${t.name}: ${t.result}` : `${badge} ${t.name}`;
+              }).join("; ")
+            : "No tests or investigations recorded.";
+          return {
+            ...f,
+            ai: testsStr,
             status: "PENDING_REVIEW"
           };
         }
@@ -443,7 +514,7 @@ function Page() {
               onClick={toggleRecording}
               disabled={transcribing}
             >
-              {recording ? <><MicOff className="h-3.5 w-3.5 mr-1.5" />Stop transcription</> : <><Mic className="h-3.5 w-3.5 mr-1.5" />Start voice transcription</>}
+              {recording ? <><MicOff className="h-3.5 w-3.5 mr-1.5" />Stop &amp; Extract</> : <><Mic className="h-3.5 w-3.5 mr-1.5" />Start Listening</>}
             </Button>
           </div>
         </header>
@@ -636,65 +707,207 @@ function Page() {
               {recording ? "● Recording" : transcribing ? "● Processing" : "Paused"}
             </span>
           </CardHeader>
-          <CardContent className="text-sm space-y-2 max-h-72 overflow-auto font-mono text-xs">
+          <CardContent className="text-sm space-y-1 max-h-72 overflow-auto font-mono text-xs scroll-smooth">
             {transcribing ? (
               <div className="flex items-center gap-2 py-4 text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin text-accent" />
-                Transcribing recording and extracting medical concepts...
+                Extracting clinical facts from transcript…
               </div>
+            ) : transcript.length === 0 && recording ? (
+              <div className="flex items-center gap-2 py-4 text-muted-foreground">
+                <span className="animate-pulse text-accent">●</span>
+                Listening… speak clearly into your microphone.
+              </div>
+            ) : transcript.length === 0 ? (
+              <div className="py-4 text-muted-foreground italic">No transcript yet. Press “Start Listening” to begin.</div>
             ) : (
               transcript.map((line, i) => {
-                const isDoc = line.startsWith("DOCTOR:");
+                const isInterim = line.startsWith("…");
+                const isDoc = line.toUpperCase().startsWith("DOCTOR");
                 return (
-                  <div key={i}>
-                    <span className={isDoc ? "text-accent" : "text-muted-foreground"}>{line.split(":")[0]}:</span>
-                    {line.slice(line.indexOf(":") + 1)}
+                  <div
+                    key={i}
+                    className={`leading-relaxed ${isInterim ? "text-muted-foreground/60 italic" : isDoc ? "text-accent" : "text-foreground"}`}
+                  >
+                    {line}
                   </div>
                 );
               })
             )}
-            <div className="text-muted-foreground italic">
-              [Consultation Agent · en · {recording ? "live · confidence 0.94" : "idle"}]
+            <div className="pt-1 text-muted-foreground/50 italic text-[10px]">
+              [Web Speech API · {recording ? "● Live — streaming" : transcribing ? "⏳ Extracting" : "Idle"}]
             </div>
           </CardContent>
         </Card>
 
-        {/* Session Summary (populated after transcription) */}
-        {(sessionSummary || summaryLoading) && (
-          <Card className="border-accent/30 bg-accent/5">
-            <CardHeader className="flex flex-row items-center gap-2 pb-2">
+        {/* ── Consultation Extraction Results (separate cards per section) ────── */}
+        {(sessionSummary || summaryLoading || liveConsultationOutput) && (
+          <div className="space-y-3">
+            {/* Section header */}
+            <div className="flex items-center gap-2">
               <Brain className="h-4 w-4 text-accent" />
-              <CardTitle className="text-base">Agent Session Summary</CardTitle>
-              {summaryLoading && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground ml-auto" />}
-            </CardHeader>
-            {sessionSummary && (
-              <CardContent className="space-y-4 text-sm">
-                {/* Overview */}
-                <div>
-                  <div className="text-[10px] uppercase font-mono tracking-wider text-muted-foreground mb-1">Overview</div>
-                  <p className="text-sm text-foreground leading-relaxed">{sessionSummary.overview}</p>
-                </div>
+              <h3 className="text-sm font-semibold">Consultation Extraction</h3>
+              {summaryLoading && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+            </div>
 
-                <div className="grid gap-3 md:grid-cols-2">
-                  {/* Key Findings */}
-                  <div>
-                    <div className="flex items-center gap-1.5 text-[10px] uppercase font-mono tracking-wider text-muted-foreground mb-1">
-                      <Activity className="h-3 w-3" />Key Findings
-                    </div>
+            {/* Grid of detail cards */}
+            <div className="grid gap-3 md:grid-cols-2">
+
+              {/* Clinical Overview */}
+              {sessionSummary?.overview && (
+                <Card className="md:col-span-2 border-accent/20">
+                  <CardHeader className="flex flex-row items-center gap-2 py-3 px-4">
+                    <Brain className="h-3.5 w-3.5 text-accent shrink-0" />
+                    <CardTitle className="text-sm font-semibold">Clinical Overview</CardTitle>
+                  </CardHeader>
+                  <CardContent className="px-4 pb-4 pt-0">
+                    <p className="text-sm text-foreground leading-relaxed">{sessionSummary.overview}</p>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Symptoms */}
+              {liveConsultationOutput?.symptoms?.length > 0 && (
+                <Card>
+                  <CardHeader className="flex flex-row items-center gap-2 py-3 px-4">
+                    <Activity className="h-3.5 w-3.5 text-orange-500 shrink-0" />
+                    <CardTitle className="text-sm font-semibold">Symptoms</CardTitle>
+                  </CardHeader>
+                  <CardContent className="px-4 pb-4 pt-0">
                     <ul className="space-y-1">
-                      {sessionSummary.key_findings.map((f, i) => (
+                      {liveConsultationOutput.symptoms.map((s: string, i: number) => (
                         <li key={i} className="flex items-start gap-1.5 text-xs">
-                          <Check className="h-3 w-3 mt-0.5 text-accent shrink-0" />{f}
+                          <span className="h-1.5 w-1.5 rounded-full bg-orange-400 mt-1.5 shrink-0" />{s}
                         </li>
                       ))}
                     </ul>
-                  </div>
+                  </CardContent>
+                </Card>
+              )}
 
-                  {/* Action Items */}
-                  <div>
-                    <div className="flex items-center gap-1.5 text-[10px] uppercase font-mono tracking-wider text-muted-foreground mb-1">
-                      <ListChecks className="h-3 w-3" />Action Items
+              {/* Diagnosis */}
+              {liveConsultationOutput?.diagnosis && (
+                <Card>
+                  <CardHeader className="flex flex-row items-center gap-2 py-3 px-4">
+                    <Stethoscope className="h-3.5 w-3.5 text-primary shrink-0" />
+                    <CardTitle className="text-sm font-semibold">Diagnosis</CardTitle>
+                  </CardHeader>
+                  <CardContent className="px-4 pb-4 pt-0 space-y-1">
+                    <p className="text-sm font-medium">{liveConsultationOutput.diagnosis}</p>
+                    {liveConsultationOutput.icd10_code && (
+                      <p className="text-xs font-mono text-muted-foreground bg-muted inline-block px-2 py-0.5 rounded">
+                        ICD-10: {liveConsultationOutput.icd10_code}
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Prescribed Medications */}
+              {liveConsultationOutput?.prescribed_drugs?.length > 0 && (
+                <Card>
+                  <CardHeader className="flex flex-row items-center gap-2 py-3 px-4">
+                    <Pill className="h-3.5 w-3.5 text-green-600 shrink-0" />
+                    <CardTitle className="text-sm font-semibold">Prescribed Medications</CardTitle>
+                  </CardHeader>
+                  <CardContent className="px-4 pb-4 pt-0">
+                    <div className="space-y-2">
+                      {liveConsultationOutput.prescribed_drugs.map((d: any, i: number) => (
+                        <div key={i} className="text-xs bg-muted/50 rounded p-2">
+                          <div className="font-semibold text-foreground">{d.name}</div>
+                          <div className="text-muted-foreground mt-0.5">
+                            {[d.dosage, d.frequency, d.duration && `for ${d.duration}`].filter(Boolean).join(" · ")}
+                          </div>
+                        </div>
+                      ))}
                     </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Tests & Investigations */}
+              <Card className={(liveConsultationOutput?.tests_and_investigations?.length ?? liveConsultationOutput?.tests_ordered?.length ?? 0) > 0 ? "" : "border-dashed"}>
+                <CardHeader className="flex flex-row items-center gap-2 py-3 px-4">
+                  <FileText className="h-3.5 w-3.5 text-accent shrink-0" />
+                  <CardTitle className="text-sm font-semibold">Tests &amp; Investigations</CardTitle>
+                  {(liveConsultationOutput?.tests_and_investigations?.length ?? liveConsultationOutput?.tests_ordered?.length ?? 0) === 0 && liveConsultationOutput && (
+                    <span className="ml-auto text-[10px] font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded">None recorded</span>
+                  )}
+                </CardHeader>
+                {(liveConsultationOutput?.tests_and_investigations?.length > 0 || liveConsultationOutput?.tests_ordered?.length > 0) && (
+                  <CardContent className="px-4 pb-4 pt-0">
+                    <div className="space-y-2">
+                      {(liveConsultationOutput?.tests_and_investigations ?? liveConsultationOutput?.tests_ordered ?? []).map((t: any, i: number) => (
+                        <div key={i} className="text-xs bg-muted/50 rounded p-2 flex items-start gap-2">
+                          <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-mono ${
+                            t.type === "performed"
+                              ? "bg-blue-100 text-blue-700"
+                              : "bg-accent/15 text-accent"
+                          }`}>
+                            {t.type === "performed" ? "Performed" : "Ordered"}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <div className="font-semibold text-foreground">{t.name}</div>
+                            {t.result
+                              ? <div className="text-green-700 mt-0.5">Finding: {t.result}</div>
+                              : <div className="text-muted-foreground italic mt-0.5">{t.type === "performed" ? "No finding recorded" : "Result pending"}</div>
+                            }
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                )}
+              </Card>
+
+              {/* Follow-Up Plan */}
+              {liveConsultationOutput?.follow_up && (
+                <Card className="border-primary/25 bg-primary/5">
+                  <CardHeader className="flex flex-row items-center gap-2 py-3 px-4">
+                    <Clock className="h-3.5 w-3.5 text-primary shrink-0" />
+                    <CardTitle className="text-sm font-semibold">Follow-Up Plan</CardTitle>
+                  </CardHeader>
+                  <CardContent className="px-4 pb-4 pt-0 space-y-1.5 text-xs">
+                    {liveConsultationOutput.follow_up.timing && (
+                      <div><span className="font-medium text-foreground">Return timing: </span>{liveConsultationOutput.follow_up.timing}</div>
+                    )}
+                    {liveConsultationOutput.follow_up.conditions && (
+                      <div><span className="font-medium text-foreground">Return earlier if: </span>{liveConsultationOutput.follow_up.conditions}</div>
+                    )}
+                    {liveConsultationOutput.follow_up.instructions && (
+                      <div><span className="font-medium text-foreground">Instructions: </span>{liveConsultationOutput.follow_up.instructions}</div>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Patient Instructions */}
+              {sessionSummary?.patient_instructions?.length > 0 && (
+                <Card>
+                  <CardHeader className="flex flex-row items-center gap-2 py-3 px-4">
+                    <User className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                    <CardTitle className="text-sm font-semibold">Patient Instructions</CardTitle>
+                  </CardHeader>
+                  <CardContent className="px-4 pb-4 pt-0">
+                    <ul className="space-y-1">
+                      {sessionSummary.patient_instructions.map((p, i) => (
+                        <li key={i} className="flex items-start gap-1.5 text-xs">
+                          <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground mt-1.5 shrink-0" />{p}
+                        </li>
+                      ))}
+                    </ul>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Action Items */}
+              {sessionSummary?.action_items?.length > 0 && (
+                <Card>
+                  <CardHeader className="flex flex-row items-center gap-2 py-3 px-4">
+                    <ListChecks className="h-3.5 w-3.5 text-accent shrink-0" />
+                    <CardTitle className="text-sm font-semibold">Action Items</CardTitle>
+                  </CardHeader>
+                  <CardContent className="px-4 pb-4 pt-0">
                     <ul className="space-y-1">
                       {sessionSummary.action_items.map((a, i) => (
                         <li key={i} className="flex items-start gap-1.5 text-xs">
@@ -702,29 +915,18 @@ function Page() {
                         </li>
                       ))}
                     </ul>
-                  </div>
-                </div>
+                  </CardContent>
+                </Card>
+              )}
 
-                {/* Patient Instructions */}
-                <div>
-                  <div className="flex items-center gap-1.5 text-[10px] uppercase font-mono tracking-wider text-muted-foreground mb-1">
-                    <User className="h-3 w-3" />Patient Instructions
-                  </div>
-                  <ul className="space-y-1">
-                    {sessionSummary.patient_instructions.map((p, i) => (
-                      <li key={i} className="flex items-start gap-1.5 text-xs">
-                        <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground mt-1.5 shrink-0" />{p}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-
-                {/* Risk Flags */}
-                {sessionSummary.risk_flags.length > 0 && (
-                  <div className="rounded-md bg-destructive/10 border border-destructive/30 p-3">
-                    <div className="flex items-center gap-1.5 text-[10px] uppercase font-mono tracking-wider text-destructive mb-1">
-                      <Flag className="h-3 w-3" />Risk Flags
-                    </div>
+              {/* Risk Flags */}
+              {sessionSummary?.risk_flags?.length > 0 && (
+                <Card className="md:col-span-2 border-destructive/30 bg-destructive/5">
+                  <CardHeader className="flex flex-row items-center gap-2 py-3 px-4">
+                    <Flag className="h-3.5 w-3.5 text-destructive shrink-0" />
+                    <CardTitle className="text-sm font-semibold text-destructive">Risk Flags</CardTitle>
+                  </CardHeader>
+                  <CardContent className="px-4 pb-4 pt-0">
                     <ul className="space-y-1">
                       {sessionSummary.risk_flags.map((r, i) => (
                         <li key={i} className="flex items-start gap-1.5 text-xs text-destructive">
@@ -732,11 +934,12 @@ function Page() {
                         </li>
                       ))}
                     </ul>
-                  </div>
-                )}
-              </CardContent>
-            )}
-          </Card>
+                  </CardContent>
+                </Card>
+              )}
+
+            </div>
+          </div>
         )}
 
         {/* Doctor analysis + IM report tabs */}

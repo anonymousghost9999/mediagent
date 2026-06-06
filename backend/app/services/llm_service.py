@@ -340,6 +340,7 @@ Ensure the JSON is properly formatted, valid, and contains no code markdown bloc
 def extract_medical_summary(transcript_text: str) -> dict:
     """
     Extracts relevant clinical facts from doctor-patient dialog transcript, ignoring casual chitchat.
+    Now also extracts tests ordered (with results) and follow-up plan.
     """
     prompt = f"""
 You are a medical transcription summarizer. You will be given a transcript of a doctor-patient consultation.
@@ -355,6 +356,11 @@ Extract the following information:
 2. Provisional Diagnosis.
 3. Appropriate ICD-10 clinical code(s).
 4. List of prescribed medications. For each medication, specify the drug name, dosage, frequency, and duration.
+5. Tests and Investigations - capture ALL of the following that are mentioned in the transcript:
+   a. Ordered tests: lab tests (blood, urine, culture, biopsy), imaging (X-ray, CT, MRI, ultrasound), ECG, spirometry, etc.
+   b. Clinical investigations performed during the encounter: physical examination findings (auscultation findings, percussion, palpation results), vitals recorded (BP, SpO2, temperature, pulse), any bedside procedure performed or its result.
+   For each item, specify: the name, the type ("ordered" for tests to be done later, or "performed" for investigations done during the visit), and the result/finding if mentioned. If no result was mentioned, leave result as an empty string.
+6. Follow-up plan: When should the patient return, under what conditions (e.g. "Return in 1 week", "Come back immediately if fever >103\u00b0F", "Follow up in 3 days if no improvement"). If no follow-up was discussed, return null.
 
 You MUST respond ONLY with a valid JSON object matching the following keys:
 {{
@@ -363,8 +369,18 @@ You MUST respond ONLY with a valid JSON object matching the following keys:
   "icd10_code": "ICD-10 code (e.g. J06.9)",
   "prescribed_drugs": [
     {{"name": "Drug Name", "dosage": "Dosage (e.g. 500mg)", "frequency": "Frequency (e.g. Twice daily)", "duration": "Duration (e.g. 5 days)"}}
-  ]
+  ],
+  "tests_and_investigations": [
+    {{"name": "Name (e.g. Complete Blood Count / Chest Auscultation / SpO2)", "type": "ordered" or "performed", "result": "Result or finding if mentioned (empty string if not discussed)"}}
+  ],
+  "follow_up": {{
+    "timing": "When to return (e.g. '1 week', 'immediately if worsening')",
+    "conditions": "Specific conditions/symptoms that warrant earlier return (or empty string if unconditional)",
+    "instructions": "Any other follow-up instructions given to the patient"
+  }}
 }}
+If no tests or investigations were mentioned, set "tests_and_investigations" to an empty list [].
+If no follow-up was discussed, set "follow_up" to null.
 Ensure the JSON is properly formatted and contains no markdown wrappers.
 """
     if not use_live_gemini:

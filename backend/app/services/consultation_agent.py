@@ -32,15 +32,20 @@ def process_consultation(audio_data: bytes, is_text_notes: bool = False, languag
     print("[Consultation Agent] Filtering noise and extracting clinical summary...")
     clinical_summary = llm.extract_medical_summary(english_transcript)
     
-    # Return structured draft
+    # Return structured draft - include ALL extracted fields so frontend can display them
     draft = {
         "raw_transcript": original_transcript,
         "english_transcript": english_transcript,
         "symptoms": clinical_summary.get("symptoms", []),
         "diagnosis": clinical_summary.get("diagnosis", "Undiagnosed"),
         "icd10_code": clinical_summary.get("icd10_code", "None"),
-        "prescribed_drugs": clinical_summary.get("prescribed_drugs", [])
+        "prescribed_drugs": clinical_summary.get("prescribed_drugs", []),
+        "tests_and_investigations": clinical_summary.get("tests_and_investigations",
+                                      clinical_summary.get("tests_ordered", [])),
+        "follow_up": clinical_summary.get("follow_up", None),
     }
-    
+
+    n_tests = len(draft["tests_and_investigations"])
     print(f"[Consultation Agent] Clinical extraction complete. Diagnosis: {draft['diagnosis']}")
+    print(f"[Consultation Agent] Tests captured: {n_tests} item(s)")
     return draft

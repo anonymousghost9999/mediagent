@@ -176,7 +176,7 @@ async def transcribe_extract_dialogue(
 @app.post("/api/consult/text-extract")
 def text_extract_notes(patient_id: str, notes: str):
     """
-    Step 3 (Text Variant): Process manually typed notes from the doctor.
+    Step 3 (Text Variant): Process manually typed notes or live speech transcript from the doctor.
     """
     try:
         draft = orch.orchestrate_dialogue_processing(

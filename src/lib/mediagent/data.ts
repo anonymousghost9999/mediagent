@@ -139,10 +139,17 @@ export const aiFields = [
   },
   {
     id: "f3",
-    label: "Follow-Up",
+    label: "Follow-Up Plan",
     ai: "Review in 7 days. PEFR diary. ER if SpO₂ < 92%.",
     status: "PENDING_REVIEW" as ReviewStatus,
     confidence: 0.91,
+  },
+  {
+    id: "f4",
+    label: "Tests Ordered",
+    ai: "None ordered in this session.",
+    status: "PENDING_REVIEW" as ReviewStatus,
+    confidence: 0.95,
   },
 ];
 

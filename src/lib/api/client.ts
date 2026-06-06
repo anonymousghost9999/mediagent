@@ -88,6 +88,17 @@ export async function transcribeConsultation(formData: FormData) {
   return response.json();
 }
 
+export async function extractTextConsultation(patientId: string, notes: string) {
+  const params = new URLSearchParams({ patient_id: patientId, notes });
+  const response = await fetch(`${API_BASE_URL}/api/consult/text-extract?${params.toString()}`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(`Text extraction failed: ${response.statusText}`);
+  }
+  return response.json();
+}
+
 export async function approveConsultation(data: ApproveConsultationRequest) {
   const response = await fetch(`${API_BASE_URL}/api/consult/approve`, {
     method: "POST",
