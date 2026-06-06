@@ -1,26 +1,32 @@
 import re
 import copy
+from datetime import datetime, timezone
+
 import app.database as db
 import app.services.llm_service as llm
-from datetime import datetime, timezone
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
 ICD10_RE = re.compile(r"^[A-Z][0-9]{2}(\.[0-9]{1,4})?$")
-TODAY = lambda: datetime.now(timezone.utc).date().isoformat()
+
+_BLANK_RECORD = {
+    "total_consultations": 0,
+    "active_conditions": [],
+    "allergy_records": [],
+    "treatment_progress": [],   # stores visit_history entries
+    "recent_developments": [],
+    "medication_history": [],
+    "current_medications": [],
+}
 
 
-def _validate_icd10(code: str) -> tuple[str, bool]:
+def _validate_icd10(code: str) -> tuple:
     """Returns (code, is_valid). Invalid codes become 'PENDING_VALIDATION'."""
     if code and ICD10_RE.match(str(code).strip()):
         return str(code).strip(), True
     return "PENDING_VALIDATION", False
-
-
-def _normalise_name(name: str) -> str:
-    return (name or "").strip().lower()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -36,13 +42,22 @@ def compile_and_persist_ehr(
     **kwargs
 ) -> dict:
     """
-    Full longitudinal EHR compilation pipeline (Steps 0–8).
-    """
-    print(f"[EHR Agent] Compiling EHR for Patient: {patient_id}")
-    today = TODAY()
-    now_ts = datetime.now(timezone.utc).isoformat()
+    Compiles and persists a longitudinal EHR record.
 
-    # Resolve actual patient profile ID — frontend sends consultation_id
+    Data priority (high → low):
+        1. doctor_edits (IM Report fields + Doctor Analysis) — always wins
+        2. consultation_output (AI-extracted clinical facts)
+        3. patient_intake_output (patient-reported symptoms and history)
+    """
+    print(f"[EHR Agent] Starting for: {patient_id}")
+    today = datetime.now(timezone.utc).date().isoformat()
+    now_ts = datetime.now(timezone.utc).isoformat()
+    doc = doctor_edits or {}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 0 — Resolve actual patient profile ID
+    # (frontend sends consultation UUID as patient_id)
+    # ─────────────────────────────────────────────────────────────────────────
     consult_row = db.get_consultation(patient_id)
     actual_patient_id = (
         consult_row.get("patient_id") or patient_id
@@ -50,320 +65,284 @@ def compile_and_persist_ehr(
     )
     print(f"[EHR Agent] Resolved patient_id: {actual_patient_id}")
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # STEP 0 — READ LONGITUDINAL RECORD
-    # ──────────────────────────────────────────────────────────────────────────
-    print("[EHR Agent] STEP 0 — Loading longitudinal record...")
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 1 — Load existing longitudinal EHR (or create blank for new patient)
+    # ─────────────────────────────────────────────────────────────────────────
     if existing_record is None:
-        existing_record_raw = db.get_medical_record(actual_patient_id)
-        existing_record = copy.deepcopy(
-            existing_record_raw if existing_record_raw else db.BLANK_MEDICAL_RECORD
-        )
+        raw = db.get_medical_record(actual_patient_id)
+        existing = copy.deepcopy(raw) if raw else {}
     else:
-        existing_record = copy.deepcopy(existing_record if existing_record else db.BLANK_MEDICAL_RECORD)
-    # Ensure all keys exist (safe migration from older schema)
-    for key, default in db.BLANK_MEDICAL_RECORD.items():
-        if key not in existing_record:
-            existing_record[key] = copy.deepcopy(default)
+        existing = copy.deepcopy(existing_record) if existing_record else {}
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # STEP 1 — MERGE DOCTOR EDITS
-    # ──────────────────────────────────────────────────────────────────────────
-    print("[EHR Agent] STEP 1 — Merging doctor edits...")
-    final_consultation = copy.deepcopy(consultation_output)
-    ai_overrides = {}  # audit trail: {field: {ai_value, doctor_value}}
+    # Ensure all expected keys are present (safe migration from older records)
+    for key, default in _BLANK_RECORD.items():
+        existing.setdefault(key, copy.deepcopy(default))
 
-    if doctor_edits:
-        for field, doctor_val in doctor_edits.items():
-            ai_val = final_consultation.get(field)
-            if ai_val != doctor_val:
-                ai_overrides[field] = {"ai_value": ai_val, "doctor_value": doctor_val}
-            final_consultation[field] = doctor_val
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 2 — Resolve final field values (doctor wins over AI)
+    # ─────────────────────────────────────────────────────────────────────────
 
-    final_consultation["_audit_overrides"] = ai_overrides
-    final_consultation["doctor_name"] = doctor_edits.get("doctor_name", "Attending Physician") if doctor_edits else "Attending Physician"
+    # Diagnosis — IM Report > AI extraction
+    final_diagnosis = (
+        doc.get("diagnosis") or
+        consultation_output.get("diagnosis") or
+        "Undiagnosed"
+    ).strip()
 
-    # Resolve key fields
-    final_diagnosis   = final_consultation.get("diagnosis", "Undiagnosed")
-    final_icd10_raw   = final_consultation.get("icd10_code", "")
-    final_meds        = final_consultation.get("prescribed_drugs") or final_consultation.get("medications") or []
-    final_symptoms    = final_consultation.get("symptoms", [])
-    final_follow_up   = final_consultation.get("follow_up") or {}
-    doctor_notes      = (doctor_edits or {}).get("doctor_notes", "") or final_consultation.get("doctor_notes", "")
+    # ICD-10
+    icd10_raw = (
+        doc.get("icd10_code") or
+        consultation_output.get("icd10_code") or ""
+    )
+    final_icd10, icd10_valid = _validate_icd10(icd10_raw)
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # STEP 2 — DRUG SAFETY AUDIT
-    # ──────────────────────────────────────────────────────────────────────────
-    print("[EHR Agent] STEP 2 — Drug safety audit...")
-    full_allergy_records = existing_record.get("allergy_records", [])
-    full_allergy_list = [
-        a.get("allergen", "") for a in full_allergy_records
-    ] or patient_intake_output.get("allergies", []) or []
-
-    current_meds_names = [
-        m.get("name", "") for m in existing_record.get("current_medications", [])
-    ]
-    history_text = f"Current medications: {', '.join(current_meds_names) or 'None'}. " \
-                   f"Medical history: {patient_intake_output.get('english_translation', '')}."
-
-    safety_audit = {}
-    try:
-        safety_result = llm.evaluate_drug_safety(
-            allergies_list=full_allergy_list,
-            history_text=history_text,
-            prescribed_meds=final_meds,
-            allergy_records=full_allergy_records,
-            current_medications=existing_record.get("current_medications", [])
-        )
-        safety_audit = {
-            "conflicts": safety_result.get("description", ""),
-            "severity": safety_result.get("severity", "None").lower(),
-            "has_conflict": safety_result.get("has_conflict", False),
-            "checked_at": now_ts
-        }
-    except Exception as e:
-        print(f"[EHR Agent] Safety audit LLM unavailable: {e}")
-        safety_audit = {
-            "conflicts": [],
-            "severity": "unknown",
-            "has_conflict": False,
-            "error": str(e),
-            "checked_at": now_ts
-        }
-
-    # Block on critical
-    severity_lower = str(safety_audit.get("severity", "")).lower()
-    if severity_lower in ("high", "critical"):
-        print("[EHR Agent] CRITICAL safety conflict — returning safety_block.")
-        return {
-            "status": "safety_block",
-            "safety_audit": safety_audit,
-            "message": "Critical drug-allergy or drug-drug conflict detected. Doctor must re-confirm before proceeding."
-        }
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # STEP 3 — BILINGUAL DISCHARGE SUMMARY
-    # ──────────────────────────────────────────────────────────────────────────
-    print("[EHR Agent] STEP 3 — Bilingual discharge summary...")
-    patient = db.get_patient(actual_patient_id)
-    if not patient:
-        # Fallback: try the raw patient_id in case caller already passed profile ID
-        patient = db.get_patient(patient_id)
-    if not patient:
-        # Construct minimal patient dict so pipeline doesn't crash on missing profile
-        print(f"[EHR Agent] WARNING: Could not find patient profile for {actual_patient_id}. Using minimal stub.")
-        patient = {"id": actual_patient_id, "language": "english", "name": "Unknown", "status": "completed"}
-
-    patient_language = patient.get("language", "english")
-    continue_meds = ", ".join(
-        m.get("name", "") for m in existing_record.get("current_medications", []) if m.get("name")
-    ) or "None"
-
-    discharge_lines = [
-        f"Diagnosis: {final_diagnosis}",
-        f"ICD-10: {final_icd10_raw}",
-        "Prescribed Medications:"
-    ]
-    for m in final_meds:
-        discharge_lines.append(f"  - {m.get('name')} {m.get('dosage')} — {m.get('frequency')} for {m.get('duration')}")
-    if not final_meds:
-        discharge_lines.append("  - No new medications prescribed.")
-    discharge_lines.append(f"Medications to continue: {continue_meds}")
-    follow_up_timing = final_follow_up.get("timing", "") if isinstance(final_follow_up, dict) else str(final_follow_up)
-    if follow_up_timing:
-        discharge_lines.append(f"Follow-up: {follow_up_timing}")
-    if doctor_notes:
-        discharge_lines.append(f"Doctor's advice: {doctor_notes}")
-
-    english_discharge = "\n".join(discharge_lines)
-    translated_discharge = english_discharge
-    try:
-        translated_discharge = llm.translate_discharge_summary(english_discharge, patient_language)
-    except Exception as e:
-        print(f"[EHR Agent] Discharge translation LLM unavailable: {e}")
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # STEP 4 — INSURANCE PRE-AUTH
-    # ──────────────────────────────────────────────────────────────────────────
-    print("[EHR Agent] STEP 4 — Insurance pre-auth...")
-    validated_icd10, icd10_valid = _validate_icd10(final_icd10_raw)
-
-    prior_relevant = [
-        c for c in existing_record.get("active_conditions", [])
-        if _normalise_name(c.get("name", "")) in _normalise_name(final_diagnosis)
-        or any(_normalise_name(c.get("name", "")) in _normalise_name(s) for s in final_symptoms)
+    # Medications — IM Report > AI extraction
+    final_meds = (
+        doc.get("prescribed_drugs") or
+        consultation_output.get("prescribed_drugs") or
+        consultation_output.get("medications") or []
+    )
+    # Normalise meds to dicts
+    final_meds = [
+        {"name": m, "dosage": "", "frequency": "", "duration": "", "prescribed_at": today}
+        if isinstance(m, str) else {**m, "prescribed_at": today}
+        for m in final_meds
     ]
 
-    insurance_preauth = {
-        "icd10_code": validated_icd10,
-        "icd10_valid": icd10_valid,
-        "icd10_flag": None if icd10_valid else "ICD-10 code failed format validation — set to PENDING_VALIDATION",
-        "clinical_justification": (
-            f"Patient presents with {', '.join(final_symptoms) or 'reported symptoms'}. "
-            f"History: {patient.get('medical_history') or 'No prior history on file'}. "
-            f"Confirmed by clinical consultation. Diagnosis: {final_diagnosis}."
-        ),
-        "proposed_treatment": [f"{m.get('name')} ({m.get('dosage')})" for m in final_meds],
-        "prior_conditions_relevant": prior_relevant
-    }
+    # Symptoms — AI extraction > patient intake
+    final_symptoms = (
+        consultation_output.get("symptoms") or
+        patient_intake_output.get("symptoms") or []
+    )
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # STEP 5 — UPDATE LONGITUDINAL PATIENT RECORD
-    # ──────────────────────────────────────────────────────────────────────────
-    print("[EHR Agent] STEP 5 — Updating longitudinal record...")
+    # Subjective fields
+    chief_complaint = (
+        doc.get("chief_complaint") or
+        patient_intake_output.get("primary_issue") or
+        patient_intake_output.get("english_translation") or ""
+    )
+    hpi          = doc.get("hpi") or ""
+    onset        = doc.get("onset") or ""
+    differential = doc.get("differential") or ""
 
-    # 5a — Consultation count
-    existing_record["total_consultations"] += 1
-    visit_number = existing_record["total_consultations"]
+    # Plan fields
+    investigations   = doc.get("investigations") or consultation_output.get("tests_and_investigations") or []
+    lifestyle_advice = doc.get("lifestyle_advice") or ""
+    follow_up_raw    = doc.get("follow_up") or consultation_output.get("follow_up") or {}
+    follow_up_timing = (
+        follow_up_raw.get("timing", str(follow_up_raw))
+        if isinstance(follow_up_raw, dict) else str(follow_up_raw)
+    )
 
-    # 5b — Active conditions
-    conditions = existing_record.setdefault("active_conditions", [])
-    new_cond_names = [d.strip() for d in final_diagnosis.split(",") if d.strip()] if final_diagnosis else []
-    for cond_name in new_cond_names:
+    # Doctor inputs
+    treatment_status = doc.get("treatment_status") or "TREATMENT_ONGOING"
+    doctor_analysis  = doc.get("analysis_text") or ""
+    clinical_notes   = doc.get("clinical_notes") or ""
+
+    # Objective vitals (doctor-filled in IM Report)
+    objective = doc.get("objective") or {}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 3 — Update longitudinal fields (always additive, never delete history)
+    # ─────────────────────────────────────────────────────────────────────────
+    existing["total_consultations"] += 1
+    visit_number = existing["total_consultations"]
+
+    # 3a. Active conditions
+    conditions = existing["active_conditions"]
+    for diag_name in [d.strip() for d in final_diagnosis.split(",") if d.strip()]:
         match = next(
-            (c for c in conditions if _normalise_name(c.get("name", "")) == _normalise_name(cond_name)),
-            None
+            (c for c in conditions if c.get("name", "").lower() == diag_name.lower()), None
         )
         if match:
             match["last_seen"] = today
-            # Doctor-explicit status change only
-            if doctor_edits and "condition_status" in doctor_edits:
-                match["status"] = doctor_edits["condition_status"]
-            match.setdefault("notes", []).append(
-                {"visit": visit_number, "date": today, "note": doctor_notes or f"Reviewed — {final_diagnosis}"}
-            )
+            match.setdefault("notes", []).append({
+                "visit": visit_number,
+                "date": today,
+                "note": clinical_notes or f"Reviewed — {treatment_status}"
+            })
         else:
             conditions.append({
-                "name": cond_name,
-                "icd10_code": validated_icd10,
+                "name": diag_name,
+                "icd10_code": final_icd10,
                 "first_seen": today,
                 "last_seen": today,
                 "status": "active",
-                "notes": [{"visit": visit_number, "date": today, "note": f"Initial diagnosis — {cond_name}"}]
+                "notes": [{"visit": visit_number, "date": today, "note": "Initial diagnosis"}]
             })
 
-    # 5c — Allergy records
-    allergy_records = existing_record.setdefault("allergy_records", [])
-    # Gather allergies from intake + doctor edits
-    intake_allergies = patient_intake_output.get("allergies", "") or ""
-    if isinstance(intake_allergies, str):
-        intake_allergies = [a.strip() for a in intake_allergies.split(",") if a.strip()]
-    new_allergies = list(intake_allergies) + list((doctor_edits or {}).get("new_allergies", []))
-
-    for allergen in new_allergies:
-        match = next(
-            (a for a in allergy_records if _normalise_name(a.get("allergen", "")) == _normalise_name(allergen)),
-            None
+    # 3b. Allergy records (union-merge — never delete)
+    allergy_records = existing["allergy_records"]
+    raw_allergies = patient_intake_output.get("allergies") or []
+    if isinstance(raw_allergies, str):
+        raw_allergies = [a.strip() for a in raw_allergies.split(",") if a.strip()]
+    for item in raw_allergies:
+        allergen_name = item if isinstance(item, str) else item.get("allergen", "")
+        if not allergen_name:
+            continue
+        existing_allergy = next(
+            (a for a in allergy_records if a.get("allergen", "").lower() == allergen_name.lower()), None
         )
-        if match:
-            match["last_confirmed"] = today
-            # Update severity only if this visit specifies one
-            if (doctor_edits or {}).get("allergy_severity"):
-                match["severity"] = doctor_edits["allergy_severity"]
+        if existing_allergy:
+            existing_allergy["last_confirmed"] = today
         else:
             allergy_records.append({
-                "allergen": allergen,
-                "reaction_type": "unknown",
-                "severity": "moderate",
+                "allergen": allergen_name,
+                "severity": "unknown",
                 "first_reported": today,
                 "last_confirmed": today
             })
 
-    # 5d — Treatment progress + recent developments
-    prior_treatment_response = "Not reported"
-    if doctor_notes and ("improved" in doctor_notes.lower() or "better" in doctor_notes.lower()):
-        prior_treatment_response = "Patient reports improvement with prior treatment."
-    elif doctor_notes and ("worse" in doctor_notes.lower() or "no improvement" in doctor_notes.lower()):
-        prior_treatment_response = "No improvement noted with prior treatment."
-
-    plan_desc = final_follow_up.get("instructions", "") if isinstance(final_follow_up, dict) else str(final_follow_up)
-
-    existing_record.setdefault("treatment_progress", []).append({
+    # 3c. Visit history entry (stored inside treatment_progress column)
+    visit_entry = {
         "visit_number": visit_number,
         "date": today,
+        # Subjective
+        "chief_complaint": chief_complaint,
+        "hpi": hpi,
+        "onset": onset,
+        "severity_score": patient_intake_output.get("severity_score", 3),
+        "symptoms": final_symptoms,
+        "differential_diagnoses": patient_intake_output.get("differential_diagnoses", []),
+        # Objective
+        "objective": objective,
+        # Assessment
         "diagnosis": final_diagnosis,
-        "treatment_given": plan_desc or f"{len(final_meds)} medication(s) prescribed.",
-        "response_to_prior_treatment": prior_treatment_response,
-        "doctor_notes": doctor_notes
-    })
+        "icd10_code": final_icd10,
+        "differential": differential,
+        # Plan
+        "investigations_ordered": investigations,
+        "medications_prescribed": final_meds,
+        "lifestyle_advice": lifestyle_advice,
+        "follow_up": follow_up_timing,
+        # Doctor inputs
+        "treatment_status": treatment_status,
+        "doctor_analysis": doctor_analysis,
+        "clinical_notes": clinical_notes,
+        # Transcript snippet
+        "transcript_summary": (consultation_output.get("english_transcript") or "")[:500]
+    }
+    existing["treatment_progress"].append(visit_entry)
 
-    # Generate development summary (with LLM fallback)
-    development_text = f"Visit {visit_number}: {final_diagnosis} diagnosed."
-    significance = "routine"
-    try:
-        dev_prompt = (
-            f"In one sentence, summarise what changed or was newly discovered at this visit.\n"
-            f"Diagnosis: {final_diagnosis}. Symptoms: {', '.join(final_symptoms)}. "
-            f"Doctor notes: {doctor_notes or 'None'}. Prior visit count: {visit_number - 1}."
+    # 3d. Recent developments (capped at 10)
+    significance = (
+        "critical" if any(
+            w in final_diagnosis.lower()
+            for w in ["cancer", "acute", "emergency", "failure", "critical", "severe"]
         )
-        development_text = llm.call_openrouter(
-            messages=[{"role": "user", "content": dev_prompt}],
-            max_tokens=80
-        ).strip()
-        severity_lower_audit = str(safety_audit.get("severity", "")).lower()
-        if severity_lower_audit in ("high", "medium"):
-            significance = "critical"
-        elif visit_number == 1 or "new" in development_text.lower():
-            significance = "notable"
-    except Exception:
-        pass  # keep default fallback
+        else ("notable" if investigations else "routine")
+    )
+    existing["recent_developments"].append({
+        "date": today,
+        "visit_number": visit_number,
+        "development": (
+            f"Visit {visit_number}: {final_diagnosis}."
+            + (f" Advice: {lifestyle_advice[:80]}" if lifestyle_advice else "")
+        ),
+        "significance": significance
+    })
+    existing["recent_developments"] = existing["recent_developments"][-10:]
 
-    recent = existing_record.setdefault("recent_developments", [])
-    recent.append({"date": today, "development": development_text, "significance": significance})
-    existing_record["recent_developments"] = recent[-10:]  # keep last 10
-
-    # 5e — Medications
-    old_current = copy.deepcopy(existing_record.get("current_medications", []))
-    if old_current:
-        existing_record.setdefault("medication_history", []).append({
-            "medications": old_current,
-            "prescribed_at": old_current[0].get("prescribed_at", "unknown") if old_current else "unknown",
+    # 3e. Medications — archive old, install new
+    old_meds = copy.deepcopy(existing.get("current_medications", []))
+    if old_meds:
+        existing["medication_history"].append({
+            "medications": old_meds,
             "archived_at": today,
             "visit_number": visit_number - 1
         })
-
-    # Also log suggested vs prescribed
-    existing_record.setdefault("medication_history", []).append({
-        "suggested": final_consultation.get("suggested_medications", []),
+    existing["medication_history"].append({
         "prescribed": final_meds,
         "visit_number": visit_number,
         "date": today
     })
-
     if final_meds:
-        existing_record["current_medications"] = [
-            {
-                "name": m.get("name"),
-                "dosage": m.get("dosage"),
-                "frequency": m.get("frequency"),
-                "duration": m.get("duration"),
-                "prescribed_at": today,
-                "prescribed_by": final_consultation.get("doctor_name", "Attending Physician")
-            }
-            for m in final_meds
-        ]
+        existing["current_medications"] = final_meds
     elif visit_number > 1:
-        existing_record["current_medications"] = [
-            {"name": "Patient is not using any current medication", "prescribed_at": today}
-        ]
+        existing["current_medications"] = [{"name": "No current medications", "prescribed_at": today}]
     else:
-        existing_record["current_medications"] = []
+        existing["current_medications"] = []
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # STEP 6 — PERSIST (best-effort atomic)
-    # ──────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 4 — Drug safety audit (non-blocking)
+    # ─────────────────────────────────────────────────────────────────────────
+    safety_audit = {
+        "has_conflict": False,
+        "severity": "unknown",
+        "conflicts": "Drug safety check skipped",
+        "checked_at": now_ts
+    }
+    try:
+        allergy_name_list = [a.get("allergen", "") for a in allergy_records]
+        history_text = (
+            f"Current medications: {[m.get('name','') for m in old_meds] or 'None'}. "
+            f"Medical history: {patient_intake_output.get('english_translation', '')}."
+        )
+        result = llm.evaluate_drug_safety(
+            allergies_list=allergy_name_list,
+            history_text=history_text,
+            prescribed_meds=final_meds,
+            allergy_records=allergy_records,
+            current_medications=old_meds
+        )
+        safety_audit = {
+            "has_conflict": result.get("has_conflict", False),
+            "severity": result.get("severity", "None"),
+            "conflicts": result.get("description", ""),
+            "checked_at": now_ts
+        }
+        print(f"[EHR Agent] Drug safety: severity={safety_audit['severity']}, conflict={safety_audit['has_conflict']}")
+    except Exception as e:
+        print(f"[EHR Agent] Drug safety check non-blocking skip: {e}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 5 — Bilingual discharge summary (non-blocking)
+    # ─────────────────────────────────────────────────────────────────────────
+    patient = db.get_patient(actual_patient_id) or db.get_patient(patient_id) or {
+        "id": actual_patient_id, "language": "english", "name": "Unknown"
+    }
+    discharge_lines = [f"Diagnosis: {final_diagnosis} ({final_icd10})", "Medications:"]
+    for m in final_meds:
+        discharge_lines.append(f"  - {m.get('name','')} {m.get('dosage','')} {m.get('frequency','')}")
+    if lifestyle_advice:
+        discharge_lines.append(f"Advice: {lifestyle_advice}")
+    if follow_up_timing:
+        discharge_lines.append(f"Follow-up: {follow_up_timing}")
+    english_discharge = "\n".join(discharge_lines)
+    translated_discharge = english_discharge
+    try:
+        translated_discharge = llm.translate_discharge_summary(
+            english_discharge, patient.get("language", "english")
+        )
+    except Exception as e:
+        print(f"[EHR Agent] Discharge translation non-blocking skip: {e}")
+
+    insurance_preauth = {
+        "icd10_code": final_icd10,
+        "icd10_valid": icd10_valid,
+        "icd10_flag": None if icd10_valid else "ICD-10 code failed validation — PENDING_VALIDATION",
+        "clinical_justification": (
+            f"Patient presents with {', '.join(str(s) for s in final_symptoms) or chief_complaint}. "
+            f"Diagnosis: {final_diagnosis}."
+        ),
+        "proposed_treatment": [f"{m.get('name','')} ({m.get('dosage','')})" for m in final_meds]
+    }
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 6 — Persist to database
+    # ─────────────────────────────────────────────────────────────────────────
     print("[EHR Agent] STEP 6 — Persisting to DB...")
     consultation_record = db.save_consultation({
-        "id": patient_id,           # keep the consultation row id (frontend sends consultation_id)
+        "id": patient_id,
         "patient_id": actual_patient_id,
         "status": "completed",
         "approved_at": now_ts,
         "symptoms": final_symptoms,
         "diagnosis": final_diagnosis,
-        "icd10_code": validated_icd10,
+        "icd10_code": final_icd10,
         "transcript": consultation_output.get("raw_transcript", ""),
         "medications": final_meds,
-        "doctor_notes": doctor_notes,
+        "doctor_notes": clinical_notes,
         "safety_audit": safety_audit,
         "original_language": patient_intake_output.get("original_language", "en-IN"),
         "intake_original_transcript": patient_intake_output.get("original_transcript", ""),
@@ -373,64 +352,51 @@ def compile_and_persist_ehr(
     })
 
     try:
-        db.upsert_medical_record(actual_patient_id, existing_record)
+        db.upsert_medical_record(actual_patient_id, existing)
+        print("[EHR Agent] Medical record upserted OK.")
     except Exception as e:
-        print(f"[EHR Agent] WARNING: upsert_medical_record failed — {e}. Consultation still saved.")
+        print(f"[EHR Agent] WARNING: upsert_medical_record failed (consultation still saved): {e}")
 
-    # Update patient status
     patient["status"] = "completed"
     db.save_patient(patient)
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # STEP 7 — EHR TIMELINE EVENTS
-    # ──────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 7 — Timeline events (all non-blocking)
+    # ─────────────────────────────────────────────────────────────────────────
     print("[EHR Agent] STEP 7 — Writing timeline events...")
-    timeline_fns = [
-        (actual_patient_id, "intake", {
-            "summary": patient_intake_output.get("english_translation", "") or consultation_output.get("raw_transcript", ""),
-            "severity_score": patient_intake_output.get("severity_score"),
-            "rationale": patient_intake_output.get("triage_rationale")
+    timeline_events = [
+        ("intake", {
+            "summary": chief_complaint,
+            "severity_score": patient_intake_output.get("severity_score")
         }),
-        (actual_patient_id, "consultation_finalized", {
+        ("consultation_finalized", {
             "summary": final_diagnosis,
-            "consultation_id": consultation_record.get("id"),
-            "icd10_code": validated_icd10,
+            "icd10_code": final_icd10,
             "prescriptions_count": len(final_meds)
         }),
-    ]
-
-    if safety_audit.get("has_conflict"):
-        timeline_fns.append((actual_patient_id, "safety_alert", {
-            "severity": safety_audit.get("severity"),
-            "conflicts": safety_audit.get("conflicts")
-        }))
-    else:
-        timeline_fns.append((actual_patient_id, "safety_clear", {
-            "severity": safety_audit.get("severity", "None"),
-            "checked_at": safety_audit.get("checked_at")
-        }))
-
-    timeline_fns += [
-        (actual_patient_id, "conditions_updated", {
-            "active_count": len(existing_record.get("active_conditions", [])),
-            "conditions": [c.get("name") for c in existing_record.get("active_conditions", [])]
+        (
+            "safety_alert" if safety_audit.get("has_conflict") else "safety_clear",
+            {"severity": safety_audit.get("severity"), "conflicts": safety_audit.get("conflicts", "")}
+        ),
+        ("conditions_updated", {
+            "active_count": len(existing["active_conditions"]),
+            "conditions": [c.get("name") for c in existing["active_conditions"]]
         }),
-        (actual_patient_id, "medication_updated", {
-            "count": len(existing_record.get("current_medications", [])),
-            "medications": [m.get("name") for m in existing_record.get("current_medications", [])]
+        ("medication_updated", {
+            "count": len(existing["current_medications"]),
+            "medications": [m.get("name") for m in existing["current_medications"]]
         }),
     ]
-
-    for args in timeline_fns:
+    for event_type, details in timeline_events:
         try:
-            db.add_timeline_event(*args)
+            db.add_timeline_event(actual_patient_id, event_type, details)
         except Exception as e:
-            print(f"[EHR Agent] Timeline event failed (non-blocking): {e}")
+            print(f"[EHR Agent] Timeline event '{event_type}' failed (non-blocking): {e}")
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # STEP 8 — RETURN EHR PACKAGE
-    # ──────────────────────────────────────────────────────────────────────────
-    print("[EHR Agent] EHR compilation complete.")
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 8 — Return full EHR package
+    # ─────────────────────────────────────────────────────────────────────────
+    print("[EHR Agent] Compilation complete.")
     return {
         "status": "completed",
         "patient": patient,
@@ -439,5 +405,5 @@ def compile_and_persist_ehr(
         "translated_discharge": translated_discharge,
         "insurance_preauth": insurance_preauth,
         "timeline": db.get_timeline(actual_patient_id),
-        "medical_record": existing_record
+        "medical_record": existing
     }

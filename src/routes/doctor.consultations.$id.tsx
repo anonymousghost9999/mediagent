@@ -87,8 +87,25 @@ function Page() {
   const [liveConsultationOutput, setLiveConsultationOutput] = useState<any>(null);
   const [liveSafetyAlerts, setLiveSafetyAlerts] = useState<any[]>([]);
   const [medicalRecord, setMedicalRecord] = useState<any>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
+
+  // Load existing longitudinal EHR for this patient (for return-visit reference)
+  const patientProfileId = data?.consultation?.patient_id as string | undefined;
+  const { data: patientHistory } = useQuery({
+    queryKey: ["patient-medical-record", patientProfileId],
+    enabled: !!patientProfileId,
+    queryFn: async () => {
+      const { supabase } = await import("@/integrations/supabase/client");
+      const { data: rec } = await supabase
+        .from("patient_medical_records")
+        .select("*")
+        .eq("patient_id", patientProfileId)
+        .maybeSingle();
+      return rec ?? null;
+    },
+  });
 
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const liveTranscriptRef = useRef<string[]>([]);  // accumulates final lines for backend
@@ -552,10 +569,52 @@ function Page() {
         patient_intake_output: intakeReportParsed,
         consultation_output: consultationOutputParsed,
         doctor_edits: {
-          diagnosis: diagnosisText,
-          icd10_code: icd10Text,
-          prescribed_drugs: parsedMeds,
-          doctor_notes: analysis.clinicalNotes
+          // ── Doctor Analysis section ──────────────────────────────────────
+          analysis_text:   analysis.analysis,
+          clinical_notes:  analysis.clinicalNotes,
+
+          // ── IM Report → Assessment (doctor wins over AI) ─────────────────
+          diagnosis:   (report["diagnosis"] as string)  || diagnosisText,
+          icd10_code:  (report["icd10"]    as string)  || icd10Text,
+          differential: (report["differential"] as string) || "",
+
+          // ── IM Report → Plan ─────────────────────────────────────────────
+          prescribed_drugs: (() => {
+            // Use structured AI meds if available; otherwise parse IM Report text
+            if (liveConsultationOutput?.prescribed_drugs?.length) {
+              return liveConsultationOutput.prescribed_drugs;
+            }
+            const src = (report["prescription"] as string) || prescriptionField;
+            return src.split(";").filter(Boolean).map((medStr: string) => {
+              const parts = medStr.trim().split(" ");
+              return {
+                name: parts[0] || "Medication",
+                dosage: parts[1] || "",
+                frequency: parts.slice(2).join(" ") || "As directed",
+                duration: "5 days"
+              };
+            });
+          })(),
+          investigations:   report["investigations"] || [],
+          lifestyle_advice: (report["advice"]     as string) || "",
+          follow_up:        (report["follow_up"]  as string) || followUpField || "",
+
+          // ── IM Report → Objective ────────────────────────────────────────
+          objective: {
+            bp:            (report["bp"]    as string) || "",
+            pulse:         (report["pulse"] as string) || "",
+            spo2:          (report["spo2"]  as string) || "",
+            temp:          (report["temp"]  as string) || "",
+            exam_findings: report["exam_findings"] || []
+          },
+
+          // ── IM Report → Subjective ───────────────────────────────────────
+          chief_complaint: (report["chief_complaint"] as string) || "",
+          hpi:             (report["hpi"]             as string) || "",
+          onset:           (report["onset"]           as string) || "",
+
+          // ── Treatment status ─────────────────────────────────────────────
+          treatment_status: status,
         }
       });
 
@@ -1130,6 +1189,75 @@ function Page() {
 
       {/* AI review panel */}
       <aside className="space-y-3 min-w-0">
+
+        {/* ── Patient History panel (return-visit reference) ──────────────── */}
+        {patientHistory && (
+          <Card className="p-0 overflow-hidden border-l-4 border-l-blue-500">
+            <button
+              className="w-full flex items-center justify-between px-4 py-3 text-sm font-semibold hover:bg-muted/40 transition-colors"
+              onClick={() => setHistoryOpen((o) => !o)}
+            >
+              <span className="flex items-center gap-2">
+                <ClipboardList className="h-4 w-4 text-blue-500" />
+                Patient History
+                <span className="ml-1 text-xs font-normal text-muted-foreground">
+                  ({patientHistory.total_consultations} prior visit{patientHistory.total_consultations !== 1 ? "s" : ""})
+                </span>
+              </span>
+              <span className="text-muted-foreground text-xs">{historyOpen ? "▲" : "▼"}</span>
+            </button>
+
+            {historyOpen && (
+              <div className="px-4 pb-4 space-y-3 text-sm">
+
+                {/* Active conditions */}
+                {patientHistory.active_conditions?.length > 0 && (
+                  <div>
+                    <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Active conditions</div>
+                    <ul className="space-y-0.5">
+                      {patientHistory.active_conditions.map((c: any, i: number) => (
+                        <li key={i} className="flex items-center justify-between">
+                          <span>{c.name}</span>
+                          {c.icd10_code && c.icd10_code !== "PENDING_VALIDATION" && (
+                            <span className="text-xs text-muted-foreground font-mono">{c.icd10_code}</span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Current medications */}
+                {patientHistory.current_medications?.length > 0 && (
+                  <div>
+                    <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Current medications</div>
+                    <ul className="space-y-0.5">
+                      {patientHistory.current_medications.map((m: any, i: number) => (
+                        <li key={i}>
+                          {typeof m === "string" ? m : m.name}
+                          {m.dosage && <span className="text-muted-foreground ml-1">({m.dosage})</span>}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Last visit summary */}
+                {patientHistory.recent_developments?.length > 0 && (() => {
+                  const last = patientHistory.recent_developments[patientHistory.recent_developments.length - 1];
+                  return (
+                    <div>
+                      <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Last visit</div>
+                      <p className="text-xs text-muted-foreground">{last.date} — {last.development}</p>
+                    </div>
+                  );
+                })()}
+
+              </div>
+            )}
+          </Card>
+        )}
+
         <div className="text-xs font-mono uppercase tracking-widest text-muted-foreground">AI review panel</div>
         {fields.map((f) => (
           <Card key={f.id} className="p-4 space-y-2">
