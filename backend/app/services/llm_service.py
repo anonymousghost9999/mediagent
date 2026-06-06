@@ -395,10 +395,19 @@ Ensure the JSON is properly formatted and contains no markdown wrappers.
         print(f"[ERROR] OpenRouter extract_medical_summary failed: {e}.")
         raise e
 
-def evaluate_drug_safety(allergies_list: list, history_text: str, prescribed_meds: list) -> dict:
+def evaluate_drug_safety(
+    allergies_list: list,
+    history_text: str,
+    prescribed_meds: list,
+    allergy_records: list = None,
+    current_medications: list = None
+) -> dict:
     """
     Performs safety validation check on allergies and prior medication history.
     """
+    allergy_records = allergy_records or []
+    current_medications = current_medications or []
+
     prompt = f"""
 You are an expert clinical pharmacist safety auditor.
 Evaluate the safety of this prescription plan:
@@ -406,10 +415,17 @@ Evaluate the safety of this prescription plan:
 - Medical History/Prior Meds: "{history_text}"
 - Newly Prescribed Medications: {prescribed_meds}
 
+LONGITUDINAL ALLERGY RECORDS (all known allergies, not just today's intake):
+{allergy_records}
+
+PATIENT'S CURRENT MEDICATIONS (already being taken before this visit):
+{current_medications}
+
 Perform a rigorous safety assessment:
 1. Check for drug-allergy interactions (e.g., patient is allergic to Penicillin and is prescribed Amoxicillin/Penicillin-class drugs).
 2. Check for drug-drug interactions between newly prescribed medications (e.g., co-administration of Nitroglycerin and Sildenafil causes dangerous blood pressure drop).
 3. Check for interactions between new meds and prior history/past meds.
+4. Check the newly prescribed medications against BOTH the longitudinal allergy records AND the current medications for drug-allergy conflicts and drug-drug interactions.
 
 You MUST respond ONLY with a valid JSON object matching this structure:
 {{
@@ -493,3 +509,56 @@ def generate_session_summary(transcript_text: str, clinical_facts: dict) -> dict
             "patient_instructions": ["Follow prescribed treatment plan"],
             "risk_flags": []
         }
+
+def generate_hpi_summary(intake_report: dict) -> str:
+    """
+    Generates a concise, clinical History of Present Illness (HPI) paragraph
+    from the structured patient agent intake report JSON.
+    Returns a single readable paragraph suitable for the IM report HPI field.
+    """
+    if not use_live_gemini:
+        parts = []
+        if intake_report.get("primary_issue"):
+            parts.append("Patient presents with " + intake_report["primary_issue"] + ".")
+        symptoms = intake_report.get("symptoms") or intake_report.get("identified_symptoms") or []
+        if symptoms:
+            parts.append("Reported symptoms include " + ", ".join(symptoms) + ".")
+        if intake_report.get("duration"):
+            parts.append("Duration: " + intake_report["duration"] + ".")
+        return " ".join(parts) or "No history available."
+
+    safe_report = {k: v for k, v in intake_report.items()
+                   if k not in ("agent_response_audio", "agent_response_translated")
+                   and not isinstance(v, bytes)}
+
+    prompt = (
+        "You are a clinical documentation assistant. Given the following structured patient intake report "
+        "(collected by an AI patient agent), write a single concise paragraph of History of Present Illness (HPI) "
+        "in standard clinical language.\n\n"
+        "The HPI should cover: chief complaint, symptom onset and duration, character/severity, "
+        "aggravating/relieving factors, associated symptoms, and relevant history. "
+        "Be factual, use only information present in the report, and write in the third person "
+        "(Patient reports...).\n\n"
+        "Do NOT include diagnosis, prescriptions, or recommendations - only patient-reported history.\n"
+        "Keep it under 120 words.\n\n"
+        "Intake Report:\n"
+        + json.dumps(safe_report, indent=2)
+        + "\n\nRespond with ONLY the HPI paragraph text, no headings or labels."
+    )
+
+    try:
+        hpi = call_openrouter(
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=300
+        )
+        print("[LLM] HPI summary generated (" + str(len(hpi)) + " chars)")
+        return hpi.strip()
+    except Exception as e:
+        print("[ERROR] generate_hpi_summary failed: " + str(e))
+        parts = []
+        if intake_report.get("primary_issue"):
+            parts.append("Patient reports " + intake_report["primary_issue"] + ".")
+        symptoms = intake_report.get("symptoms") or []
+        if symptoms:
+            parts.append("Symptoms include " + ", ".join(symptoms) + ".")
+        return " ".join(parts) or "History unavailable."

@@ -225,3 +225,21 @@ def get_session_summary(req: SessionSummaryRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+class HpiSummaryRequest(BaseModel):
+    intake_report: Dict[str, Any]
+
+
+@app.post("/api/consult/hpi-summary")
+def generate_hpi(req: HpiSummaryRequest):
+    """
+    Generates a clinical History of Present Illness (HPI) paragraph from the
+    patient agent's structured intake report JSON using an LLM.
+    Returns: { "hpi": "<paragraph text>" }
+    """
+    try:
+        import app.services.llm_service as llm
+        hpi = llm.generate_hpi_summary(req.intake_report)
+        return {"hpi": hpi}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

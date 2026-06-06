@@ -37,9 +37,14 @@ function Page() {
       const newId = crypto.randomUUID();
       const { data, error } = await supabase
         .from("consultations")
-        .insert({ id: newId, patient_id: user.id, status: "drafting", severity_score: 3, record_name })
+        .insert({ id: newId, patient_id: user.id, status: "drafting", severity_score: 3 })
         .select("id")
         .single();
+
+      // Try to set record_name (column may not exist in all deployments)
+      if (data?.id) {
+        supabase.from("consultations").update({ record_name }).eq("id", data.id).then(() => {});
+      }
       if (error) throw error;
       return data;
     },

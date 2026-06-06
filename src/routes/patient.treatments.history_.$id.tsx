@@ -7,7 +7,7 @@ import { treatmentStatusLabel } from "@/lib/mediagent/store";
 import { downloadReportAsPDF } from "@/components/mediagent/im-report-form";
 import { ArrowLeft, Download, FileText, Pill, ClipboardList, FileCheck2 } from "lucide-react";
 
-export const Route = createFileRoute("/patient/treatments/history/$id")({
+export const Route = createFileRoute("/patient/treatments/history_/$id")({
   component: Page,
   notFoundComponent: () => (
     <div className="p-6"><p>Consultation record not found.</p></div>

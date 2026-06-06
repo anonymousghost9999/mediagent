@@ -127,13 +127,21 @@ def orchestrate_finalize_consultation(
     persist finalized data, and compile the final shared timeline.
     """
     print(f"[Orchestrator] Finalizing Consultation for Patient ID: {patient_id}")
-    
+
+    # Resolve actual patient_id (frontend may send consultation_id)
+    consult = db.get_consultation(patient_id)
+    actual_patient_id = consult.get("patient_id") or patient_id if consult else patient_id
+
+    # Fetch longitudinal record before calling EHR Agent
+    existing_record = db.get_medical_record(actual_patient_id) or {}
+
     # Call the EHR Agent (Persists record, updates timeline, performs safety checks)
     final_ehr = ehr_agent.compile_and_persist_ehr(
         patient_id=patient_id,
         patient_intake_output=patient_intake_output,
         consultation_output=consultation_output,
-        doctor_edits=doctor_edits
+        doctor_edits=doctor_edits,
+        existing_record=existing_record,
     )
-    
+
     return final_ehr

@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -8,27 +8,21 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { aiFields, safetyAlerts, patient, timeline, severityLabel, type Severity } from "@/lib/mediagent/data";
-import { StatusPill, DraftBadge } from "@/components/mediagent/badges";
+import { severityLabel, type Severity, type ReviewStatus } from "@/lib/mediagent/data";
+import { StatusPill } from "@/components/mediagent/badges";
 import { IMReportForm, downloadReportAsPDF } from "@/components/mediagent/im-report-form";
 import { logAudit, treatmentStatuses, treatmentStatusLabel, type TreatmentStatus } from "@/lib/mediagent/store";
 import { getConsultationById } from "@/lib/mediagent/live";
 import type { IMReportData } from "@/lib/mediagent/im-report";
-import { startConsultation, transcribeConsultation, extractTextConsultation, approveConsultation, getSessionSummary, type SessionSummary } from "@/lib/api/client";
+import { startConsultation, transcribeConsultation, extractTextConsultation, approveConsultation, getSessionSummary, fetchHpiSummary, type SessionSummary } from "@/lib/api/client";
 import {
   AlertTriangle, Check, Pencil, X, ShieldCheck, Mic, MicOff, Save, Download, FileText, Loader2,
   Activity, Brain, ListChecks, User, Flag, Stethoscope, ClipboardList, Clock, Pill,
 } from "lucide-react";
 import { toast } from "sonner";
-import type { ReviewStatus } from "@/lib/mediagent/data";
 
 export const Route = createFileRoute("/doctor/consultations/$id")({ component: Page });
 
-const initialPre = {
-  chiefComplaint: "Wheezing & cough × 2 days, worse at night. Slight exertional dyspnea. No fever.",
-  severity: "3",
-  patientReports: "Inhaler use inconsistent. No ER visits.",
-};
 
 function Page() {
   const { id } = Route.useParams();
@@ -36,46 +30,41 @@ function Page() {
     queryKey: ["doctor-consultation", id],
     queryFn: async () => getConsultationById(id),
   });
-  const currentPatient = data?.profile ? {
-    fullName: data.profile.full_name ?? patient.fullName,
-    mrn: data.profile.mrn ?? patient.mrn,
-    age: data.profile.dob ? Math.max(0, new Date().getFullYear() - new Date(data.profile.dob).getFullYear()) : patient.age,
-    gender: (data.details as any)?.gender ?? (data.profile as any)?.gender ?? patient.gender,
-    bloodGroup: (data.profile as any)?.blood_group ?? (data.details as any)?.blood_group ?? patient.bloodGroup,
-    bp: patient.bp,
-    bloodSugar: patient.bloodSugar,
-    allergies: ((data.details as any)?.known_allergies as string[] | undefined) ?? patient.allergies,
-    chronic: ((data.details as any)?.chronic_conditions as string[] | undefined) ?? patient.chronic,
-    currentMeds: ((data.profile as any)?.current_meds as string[] | undefined) ?? patient.currentMeds,
-  } : patient;
+  const currentPatient = {
+    fullName: data?.profile?.full_name ?? "—",
+    mrn: data?.profile?.mrn ?? "—",
+    age: data?.profile?.dob ? Math.max(0, new Date().getFullYear() - new Date(data.profile.dob).getFullYear()) : null,
+    gender: (data?.profile as any)?.gender ?? "—",
+    bloodGroup: (data?.profile as any)?.blood_group ?? "—",
+    allergies: ((data?.profile as any)?.allergies as string[] | undefined) ?? [],
+    chronic: ((data?.profile as any)?.chronic_conditions as string[] | undefined) ?? [],
+    currentMeds: ((data?.profile as any)?.current_meds as string[] | undefined) ?? [],
+  };
 
   // Parse patient agent intake report from Supabase
   const intakeSummaryRaw = (data?.consultation as any)?.intake_summary;
-  const intakeReport = (() => {
+  const intakeReport = useMemo(() => {
     if (!intakeSummaryRaw) return null;
     try { return JSON.parse(intakeSummaryRaw); } catch { return null; }
-  })();
+  }, [intakeSummaryRaw]);
   const intakeAvailable = !!intakeReport;
 
   // AI review state
-  const [fields, setFields] = useState(aiFields);
+  const [fields, setFields] = useState<{id:string;label:string;ai:string;status:ReviewStatus;confidence:number}[]>([
+    { id: "f1", label: "Suggested Diagnosis", ai: "", status: "PENDING_REVIEW", confidence: 0 },
+    { id: "f2", label: "Suggested Prescription", ai: "", status: "PENDING_REVIEW", confidence: 0 },
+    { id: "f3", label: "Follow-Up Plan", ai: "", status: "PENDING_REVIEW", confidence: 0 },
+    { id: "f4", label: "Tests Ordered", ai: "", status: "PENDING_REVIEW", confidence: 0 },
+  ]);
   const [editing, setEditing] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
 
-  // Pre-consultation editing
-  const [pre, setPre] = useState(initialPre);
-  const [preEditing, setPreEditing] = useState(false);
-  const [preDraft, setPreDraft] = useState(initialPre);
+
 
   // Voice transcription
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
-  const [transcript, setTranscript] = useState<string[]>([
-    "DOCTOR: Tell me when this started.",
-    "PATIENT: About two days ago, after the dust storm.",
-    "DOCTOR: Have you used the rescue inhaler?",
-    "PATIENT: Yes, three times yesterday.",
-  ]);
+  const [transcript, setTranscript] = useState<string[]>([]);
 
   // Doctor analysis / prescription
   const [analysis, setAnalysis] = useState({
@@ -87,8 +76,8 @@ function Page() {
 
   // IM report
   const [report, setReport] = useState<IMReportData>({
-    chief_complaint: initialPre.chiefComplaint,
-    severity: "3 Medium",
+    chief_complaint: "",
+    severity: "",
   });
 
   // Treatment status
@@ -97,8 +86,26 @@ function Page() {
 
   const [liveConsultationOutput, setLiveConsultationOutput] = useState<any>(null);
   const [liveSafetyAlerts, setLiveSafetyAlerts] = useState<any[]>([]);
+  const [medicalRecord, setMedicalRecord] = useState<any>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
+
+  // Load existing longitudinal EHR for this patient (for return-visit reference)
+  const patientProfileId = data?.consultation?.patient_id as string | undefined;
+  const { data: patientHistory } = useQuery({
+    queryKey: ["patient-medical-record", patientProfileId],
+    enabled: !!patientProfileId,
+    queryFn: async () => {
+      const { supabase } = await import("@/integrations/supabase/client");
+      const { data: rec } = await supabase
+        .from("patient_medical_records")
+        .select("*")
+        .eq("patient_id", patientProfileId)
+        .maybeSingle();
+      return rec ?? null;
+    },
+  });
 
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const liveTranscriptRef = useRef<string[]>([]);  // accumulates final lines for backend
@@ -120,31 +127,176 @@ function Page() {
 
   }, [id]);
 
+  // Restore consultation extraction + session summary from DB on page load
   useEffect(() => {
-    if (data?.consultation) {
-      setPre({
-        chiefComplaint: data.consultation.chief_complaint || data.consultation.intake_english_translation || "No symptoms captured",
-        severity: String(data.consultation.severity_score ?? 3),
-        patientReports: data.consultation.intake_summary || data.consultation.intake_english_translation || "No prior guidance",
-      });
-      return;
+    const savedConsult = (data?.consultation as any)?.consultation_summary;
+    if (savedConsult) {
+      setLiveConsultationOutput((prev: any) => prev ?? (typeof savedConsult === "object" ? savedConsult : (() => { try { return JSON.parse(savedConsult); } catch { return null; } })()));
     }
+    const savedSummary = (data?.consultation as any)?.session_summary;
+    if (savedSummary) {
+      setSessionSummary((prev) => prev ?? (typeof savedSummary === "object" ? savedSummary : (() => { try { return JSON.parse(savedSummary); } catch { return null; } })()));
+    }
+  }, [data]);
 
-    const stored = localStorage.getItem(`mediagent_report_${id}`);
-    if (stored) {
-      try {
-        const reportData = JSON.parse(stored);
-        setPre({
-          chiefComplaint: reportData.english_translation || "No symptoms captured",
-          // Store the raw ESI score (1 = most critical, 5 = least urgent) directly — no inversion
-          severity: String(reportData.severity_score ?? 3),
-          patientReports: reportData.agent_response_english || "No prior guidance",
-        });
-      } catch (err) {
-        console.error("Failed to parse stored report for pre-consultation", err);
+  // Auto-fill Doctor Analysis section from session summary + consultation extraction
+  useEffect(() => {
+    setAnalysis((prev) => {
+      const updates: Partial<typeof prev> = {};
+
+      // analysis field ← session summary overview
+      if (!prev.analysis && sessionSummary?.overview) {
+        updates.analysis = sessionSummary.overview;
       }
-    }
-  }, [id, data]);
+
+      // diagnosis ← consultation extraction
+      if (!prev.diagnosis && liveConsultationOutput?.diagnosis) {
+        updates.diagnosis = liveConsultationOutput.diagnosis;
+      }
+
+      // prescription ← format prescribed_drugs array
+      if (!prev.prescription) {
+        const drugs = liveConsultationOutput?.prescribed_drugs ?? [];
+        if (drugs.length > 0) {
+          updates.prescription = drugs
+            .map((d: any) =>
+              [d.name, d.dosage, d.frequency, d.duration ? `× ${d.duration}` : ""]
+                .filter(Boolean).join(" ")
+            )
+            .join("\n");
+        }
+      }
+
+      // clinicalNotes: intentionally left for doctor to fill
+
+      return Object.keys(updates).length > 0 ? { ...prev, ...updates } : prev;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionSummary, liveConsultationOutput]);
+
+  // Auto-fill IM Report Subjective section from patient agent intake report
+  useEffect(() => {
+    if (!intakeReport) return;
+
+    // chief_complaint: primary issue reported by patient
+    const complaint = intakeReport.primary_issue
+      || intakeReport.english_translation
+      || (data?.consultation as any)?.chief_complaint
+      || "";
+
+    // severity: map ESI score (1–5) to IM report radio option string
+    const severityMap: Record<number, string> = {
+      1: "1 Routine", 2: "2 Low", 3: "3 Medium", 4: "4 High", 5: "5 Emergency",
+    };
+    const score = typeof intakeReport.severity_score === "number" ? intakeReport.severity_score : 3;
+    const severityVal = severityMap[score] ?? "3 Medium";
+
+    // onset: derive from duration text heuristics
+    let onset = "";
+    const dur: string = (intakeReport.duration || "").toLowerCase();
+    if (dur.includes("sudden") || dur.includes("acute") || dur.includes("hour")) onset = "Sudden";
+    else if (dur.includes("day") || dur.includes("week")) onset = "Gradual";
+    else if (dur.includes("recur") || dur.includes("episod")) onset = "Recurrent";
+    else if (dur.includes("month") || dur.includes("year") || dur.includes("chronic")) onset = "Chronic";
+
+    // Fill non-HPI fields immediately
+    setReport((prev) => ({
+      ...prev,
+      ...(complaint && !prev.chief_complaint ? { chief_complaint: complaint } : {}),
+      ...(!prev.severity ? { severity: severityVal } : {}),
+      ...(onset && !prev.onset ? { onset } : {}),
+      // Placeholder while LLM generates HPI
+      ...(!prev.hpi ? { hpi: "Generating clinical summary…" } : {}),
+    }));
+
+    // Fetch LLM-generated HPI from backend (async, non-blocking)
+    fetchHpiSummary(intakeReport as Record<string, unknown>)
+      .then((hpi) => {
+        if (hpi) {
+          setReport((prev) => ({
+            ...prev,
+            hpi,
+          }));
+        }
+      })
+      .catch((err) => {
+        console.warn("[HPI] Failed to generate LLM summary, leaving placeholder:", err);
+        // Replace placeholder with symptom list fallback
+        const symptoms: string[] = intakeReport.symptoms ?? intakeReport.identified_symptoms ?? [];
+        const fallback = symptoms.length > 0
+          ? `Patient reports ${complaint || symptoms.join(", ")}.`
+          : (complaint || "");
+        if (fallback) {
+          setReport((prev) => ({ ...prev, hpi: fallback }));
+        }
+      });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [intakeReport]);
+
+  // Auto-fill Assessment + Plan sections when consultation agent extraction arrives
+  useEffect(() => {
+    if (!liveConsultationOutput) return;
+
+    const co = liveConsultationOutput;
+
+    // ── Assessment ────────────────────────────────────────────────────────
+    const diagnosis: string = co.diagnosis || "";
+    const icd10: string = co.icd10_code || co.icd_10_code || "";
+    // differential: intentionally left empty — doctor fills
+
+    // ── Plan: Prescription ────────────────────────────────────────────────
+    const drugs: { name?: string; dosage?: string; frequency?: string; duration?: string }[] =
+      co.prescribed_drugs ?? co.medications ?? [];
+    const prescription = drugs
+      .map((d) =>
+        [d.name, d.dosage, d.frequency, d.duration ? `× ${d.duration}` : ""]
+          .filter(Boolean).join(" ")
+      )
+      .join("\n");
+
+    // ── Plan: Investigations (checkbox — match names to schema options) ────
+    const checkboxOptions = ["CBC", "CRP", "Chest X-ray", "Spirometry", "ECG", "Blood glucose"];
+    const orderedTests: { name?: string }[] = co.tests_and_investigations ?? [];
+    const matchedInvestigations = checkboxOptions.filter((opt) =>
+      orderedTests.some((t) =>
+        (t.name || "").toLowerCase().includes(opt.toLowerCase())
+      )
+    );
+
+    // ── Plan: Lifestyle / Advice — from follow_up.instructions ────────────
+    const followUpObj = co.follow_up;
+    const advice: string = followUpObj?.instructions
+      || followUpObj?.patient_instructions
+      || co.patient_instructions
+      || "";
+
+    // ── Plan: Follow-up select — map timing to schema options ─────────────
+    const followUpOptions = ["No follow-up", "1 week", "2 weeks", "1 month", "3 months", "As needed"];
+    const timing: string = (followUpObj?.timing || "").toLowerCase();
+    let followUpVal = "";
+    if (!timing || timing === "none") followUpVal = "No follow-up";
+    else if (timing.includes("1 week") || timing.includes("one week") || timing.includes("7 day")) followUpVal = "1 week";
+    else if (timing.includes("2 week") || timing.includes("two week") || timing.includes("14 day") || timing.includes("fortnight")) followUpVal = "2 weeks";
+    else if (timing.includes("1 month") || timing.includes("one month") || timing.includes("30 day") || timing.includes("4 week")) followUpVal = "1 month";
+    else if (timing.includes("3 month") || timing.includes("three month") || timing.includes("quarter")) followUpVal = "3 months";
+    else if (timing.includes("need") || timing.includes("required") || timing.includes("worsening") || timing.includes("immediate")) followUpVal = "As needed";
+    else followUpVal = "As needed"; // catch-all for freeform timing
+
+    setReport((prev) => ({
+      ...prev,
+      // Assessment
+      ...(diagnosis ? { diagnosis } : {}),
+      ...(icd10 ? { icd10 } : {}),
+      // differential left untouched
+      // Plan
+      ...(prescription ? { prescription } : {}),
+      ...(matchedInvestigations.length > 0 ? { investigations: matchedInvestigations } : {}),
+      ...(advice ? { advice } : {}),
+      ...(followUpVal ? { follow_up: followUpVal } : {}),
+    }));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveConsultationOutput]);
+
 
   const updateField = (fid: string, st: ReviewStatus, edit?: string) => {
     setFields((fs) => fs.map((f) => (f.id === fid ? { ...f, status: st, ai: edit ?? f.ai } : f)));
@@ -155,20 +307,6 @@ function Page() {
       entity: `consultation:${id}/field:${fid}`,
       after: edit,
     });
-  };
-
-  const savePre = () => {
-    logAudit({
-      actor: "Dr. Mehta",
-      action: "PRECONSULT_EDITED",
-      entity: `consultation:${id}`,
-      before: pre,
-      after: preDraft,
-      note: "Edited after direct confirmation with patient.",
-    });
-    setPre(preDraft);
-    setPreEditing(false);
-    toast.success("Pre-consultation updated", { description: "Change recorded in audit log." });
   };
 
   const toggleRecording = () => {
@@ -263,6 +401,18 @@ function Page() {
       const res = await extractTextConsultation(id, fullText);
       setLiveConsultationOutput(res);
 
+      // ── Persist consultation extraction to Supabase (fire-and-forget) ────
+      import("@/integrations/supabase/client").then(({ supabase }) => {
+        supabase
+          .from("consultations")
+          .update({ consultation_summary: res })
+          .eq("id", id)
+          .then(({ error }) => {
+            if (error) console.error("[DB] Failed to save consultation_summary:", error.message);
+            else console.log("[DB] consultation_summary saved for", id);
+          });
+      });
+
       toast.success("Dialogue transcribed and clinical summary extracted!", { id: toastId });
 
       if (res.raw_transcript) {
@@ -334,6 +484,17 @@ function Page() {
       }).then((s) => {
         setSessionSummary(s);
         toast.info("Session summary ready", { description: "AI has generated a structured summary below the transcript." });
+        // ── Persist session summary to Supabase (fire-and-forget) ──────────
+        import("@/integrations/supabase/client").then(({ supabase }) => {
+          supabase
+            .from("consultations")
+            .update({ session_summary: s })
+            .eq("id", id)
+            .then(({ error }) => {
+              if (error) console.error("[DB] Failed to save session_summary:", error.message);
+              else console.log("[DB] session_summary saved for", id);
+            });
+        });
       }).catch((err) => {
         console.error("Session summary failed:", err);
       }).finally(() => setSummaryLoading(false));
@@ -357,7 +518,7 @@ function Page() {
   };
 
   const allApproved = fields.every((f) => f.status === "APPROVED" || f.status === "MODIFIED_AND_APPROVED");
-  const hasCritical = (liveSafetyAlerts.length > 0 ? liveSafetyAlerts : safetyAlerts).some(
+  const hasCritical = (liveSafetyAlerts).some(
     (a) => (a.level as string).toUpperCase() === "CRITICAL"
   );
 
@@ -367,12 +528,11 @@ function Page() {
       const intakeData = localStorage.getItem(`mediagent_report_${id}`);
       const intakeReportParsed = intakeData ? JSON.parse(intakeData) : {
         original_language: "en-IN",
-        original_transcript: pre.chiefComplaint,
-        english_translation: pre.chiefComplaint,
-        agent_response_english: pre.patientReports,
-        agent_response_translated: pre.patientReports,
-        // pre.severity is now the raw ESI score — use it directly
-        severity_score: Number(pre.severity)
+        original_transcript: data?.consultation?.chief_complaint || "",
+        english_translation: data?.consultation?.chief_complaint || "",
+        agent_response_english: data?.consultation?.intake_summary || "",
+        agent_response_translated: data?.consultation?.intake_summary || "",
+        severity_score: data?.consultation?.severity_score ?? 3
       };
 
       const diagnosisField = fields.find((f) => f.id === "f1")?.ai || "";
@@ -401,7 +561,7 @@ function Page() {
         diagnosis: diagnosisText,
         icd10_code: icd10Text,
         prescribed_drugs: parsedMeds,
-        symptoms: [pre.chiefComplaint]
+        symptoms: data?.consultation?.symptoms ?? []
       };
 
       const res = await approveConsultation({
@@ -409,10 +569,52 @@ function Page() {
         patient_intake_output: intakeReportParsed,
         consultation_output: consultationOutputParsed,
         doctor_edits: {
-          diagnosis: diagnosisText,
-          icd10_code: icd10Text,
-          prescribed_drugs: parsedMeds,
-          doctor_notes: analysis.clinicalNotes
+          // ── Doctor Analysis section ──────────────────────────────────────
+          analysis_text:   analysis.analysis,
+          clinical_notes:  analysis.clinicalNotes,
+
+          // ── IM Report → Assessment (doctor wins over AI) ─────────────────
+          diagnosis:   (report["diagnosis"] as string)  || diagnosisText,
+          icd10_code:  (report["icd10"]    as string)  || icd10Text,
+          differential: (report["differential"] as string) || "",
+
+          // ── IM Report → Plan ─────────────────────────────────────────────
+          prescribed_drugs: (() => {
+            // Use structured AI meds if available; otherwise parse IM Report text
+            if (liveConsultationOutput?.prescribed_drugs?.length) {
+              return liveConsultationOutput.prescribed_drugs;
+            }
+            const src = (report["prescription"] as string) || prescriptionField;
+            return src.split(";").filter(Boolean).map((medStr: string) => {
+              const parts = medStr.trim().split(" ");
+              return {
+                name: parts[0] || "Medication",
+                dosage: parts[1] || "",
+                frequency: parts.slice(2).join(" ") || "As directed",
+                duration: "5 days"
+              };
+            });
+          })(),
+          investigations:   report["investigations"] || [],
+          lifestyle_advice: (report["advice"]     as string) || "",
+          follow_up:        (report["follow_up"]  as string) || followUpField || "",
+
+          // ── IM Report → Objective ────────────────────────────────────────
+          objective: {
+            bp:            (report["bp"]    as string) || "",
+            pulse:         (report["pulse"] as string) || "",
+            spo2:          (report["spo2"]  as string) || "",
+            temp:          (report["temp"]  as string) || "",
+            exam_findings: report["exam_findings"] || []
+          },
+
+          // ── IM Report → Subjective ───────────────────────────────────────
+          chief_complaint: (report["chief_complaint"] as string) || "",
+          hpi:             (report["hpi"]             as string) || "",
+          onset:           (report["onset"]           as string) || "",
+
+          // ── Treatment status ─────────────────────────────────────────────
+          treatment_status: status,
         }
       });
 
@@ -428,14 +630,18 @@ function Page() {
         }
       }
 
+      if (res?.medical_record) {
+        setMedicalRecord(res.medical_record);
+      }
+
       downloadReportAsPDF({
         title: `Finalized Consultation Report · ${id}`,
         patientName: currentPatient.fullName,
         patientMrn: currentPatient.mrn,
         doctor: "Dr. R. Mehta",
         data: {
-          chief_complaint: pre.chiefComplaint,
-          severity: `${pre.severity} ${severityLabel[Number(pre.severity) as Severity] || "Medium"}`
+          chief_complaint: data?.consultation?.chief_complaint || intakeReport?.primary_issue || "",
+          severity: `${data?.consultation?.severity_score ?? 3} ${severityLabel[(data?.consultation?.severity_score ?? 3) as Severity] || "Medium"}`
         },
         extras: {
           "Doctor analysis": analysis.analysis || "Approved pre-consultation summary",
@@ -529,22 +735,22 @@ function Page() {
                 <span className="text-xs font-mono font-normal text-muted-foreground bg-muted px-2 py-0.5 rounded">{currentPatient.mrn}</span>
               </div>
               <div className="text-xs text-muted-foreground">
-                {currentPatient.age}y · {currentPatient.gender} · Blood Group: {currentPatient.bloodGroup} · BP: {currentPatient.bp} · Sugar: {currentPatient.bloodSugar}
+                {currentPatient.age !== null ? `${currentPatient.age}y` : "Age unknown"} · {currentPatient.gender} · Blood Group: {currentPatient.bloodGroup}
               </div>
             </div>
             
             <div className="flex gap-4 flex-wrap text-xs">
               <div className="bg-background/80 border p-2 rounded min-w-[150px]">
                 <div className="text-[10px] uppercase font-mono text-muted-foreground">Allergies</div>
-                <div className="font-medium text-destructive">{currentPatient.allergies.join(", ")}</div>
+                <div className="font-medium text-destructive">{currentPatient.allergies.length > 0 ? currentPatient.allergies.join(", ") : "None reported"}</div>
               </div>
               <div className="bg-background/80 border p-2 rounded min-w-[150px]">
                 <div className="text-[10px] uppercase font-mono text-muted-foreground">Chronic Conditions</div>
-                <div className="font-medium text-foreground">{currentPatient.chronic.join(", ")}</div>
+                <div className="font-medium text-foreground">{currentPatient.chronic.length > 0 ? currentPatient.chronic.join(", ") : "None"}</div>
               </div>
               <div className="bg-background/80 border p-2 rounded min-w-[150px]">
                 <div className="text-[10px] uppercase font-mono text-muted-foreground">Current Medications</div>
-                <div className="font-medium text-foreground">{currentPatient.currentMeds.join(", ")}</div>
+                <div className="font-medium text-foreground">{currentPatient.currentMeds.length > 0 ? currentPatient.currentMeds.join(", ") : "None"}</div>
               </div>
             </div>
           </div>
@@ -656,48 +862,6 @@ function Page() {
           </CardContent>
         </Card>
 
-        {/* Pre-consultation (editable) */}
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle className="text-base">Pre-consultation summary</CardTitle>
-            {!preEditing ? (
-              <Button size="sm" variant="outline" onClick={() => { setPreDraft(pre); setPreEditing(true); }}>
-                <Pencil className="h-3 w-3 mr-1" />Edit
-              </Button>
-            ) : (
-              <div className="flex gap-1.5">
-                <Button size="sm" onClick={savePre}><Save className="h-3 w-3 mr-1" />Save</Button>
-                <Button size="sm" variant="ghost" onClick={() => setPreEditing(false)}>Cancel</Button>
-              </div>
-            )}
-          </CardHeader>
-          <CardContent className="text-sm space-y-2">
-            <DraftBadge />
-            {!preEditing ? (
-              <>
-                <p><b>Chief complaint:</b> {pre.chiefComplaint}</p>
-                <p><b>Severity (ESI):</b> {pre.severity} / 5</p>
-                <p><b>AI Pre-Assessment:</b> {pre.patientReports}</p>
-                <p className="text-[11px] text-muted-foreground pt-1">Confirm with the patient before editing. All changes are recorded in the audit log.</p>
-              </>
-            ) : (
-              <div className="space-y-2">
-                <div>
-                  <Label className="text-xs">Chief complaint</Label>
-                  <Textarea value={preDraft.chiefComplaint} onChange={(e) => setPreDraft({ ...preDraft, chiefComplaint: e.target.value })} />
-                </div>
-                <div>
-                  <Label className="text-xs">Severity (1–5)</Label>
-                  <Input value={preDraft.severity} onChange={(e) => setPreDraft({ ...preDraft, severity: e.target.value })} />
-                </div>
-                <div>
-                  <Label className="text-xs">Patient reports</Label>
-                  <Textarea value={preDraft.patientReports} onChange={(e) => setPreDraft({ ...preDraft, patientReports: e.target.value })} />
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
 
         {/* Transcript */}
         <Card>
@@ -985,8 +1149,8 @@ function Page() {
                 variant="outline"
                 onClick={() => downloadReportAsPDF({
                   title: `IM Report · ${id}`,
-                  patientName: patient.fullName,
-                  patientMrn: patient.mrn,
+                  patientName: currentPatient.fullName,
+                  patientMrn: currentPatient.mrn,
                   doctor: "Dr. R. Mehta",
                   data: report,
                 })}
@@ -1025,6 +1189,75 @@ function Page() {
 
       {/* AI review panel */}
       <aside className="space-y-3 min-w-0">
+
+        {/* ── Patient History panel (return-visit reference) ──────────────── */}
+        {patientHistory && (
+          <Card className="p-0 overflow-hidden border-l-4 border-l-blue-500">
+            <button
+              className="w-full flex items-center justify-between px-4 py-3 text-sm font-semibold hover:bg-muted/40 transition-colors"
+              onClick={() => setHistoryOpen((o) => !o)}
+            >
+              <span className="flex items-center gap-2">
+                <ClipboardList className="h-4 w-4 text-blue-500" />
+                Patient History
+                <span className="ml-1 text-xs font-normal text-muted-foreground">
+                  ({patientHistory.total_consultations} prior visit{patientHistory.total_consultations !== 1 ? "s" : ""})
+                </span>
+              </span>
+              <span className="text-muted-foreground text-xs">{historyOpen ? "▲" : "▼"}</span>
+            </button>
+
+            {historyOpen && (
+              <div className="px-4 pb-4 space-y-3 text-sm">
+
+                {/* Active conditions */}
+                {patientHistory.active_conditions?.length > 0 && (
+                  <div>
+                    <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Active conditions</div>
+                    <ul className="space-y-0.5">
+                      {patientHistory.active_conditions.map((c: any, i: number) => (
+                        <li key={i} className="flex items-center justify-between">
+                          <span>{c.name}</span>
+                          {c.icd10_code && c.icd10_code !== "PENDING_VALIDATION" && (
+                            <span className="text-xs text-muted-foreground font-mono">{c.icd10_code}</span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Current medications */}
+                {patientHistory.current_medications?.length > 0 && (
+                  <div>
+                    <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Current medications</div>
+                    <ul className="space-y-0.5">
+                      {patientHistory.current_medications.map((m: any, i: number) => (
+                        <li key={i}>
+                          {typeof m === "string" ? m : m.name}
+                          {m.dosage && <span className="text-muted-foreground ml-1">({m.dosage})</span>}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Last visit summary */}
+                {patientHistory.recent_developments?.length > 0 && (() => {
+                  const last = patientHistory.recent_developments[patientHistory.recent_developments.length - 1];
+                  return (
+                    <div>
+                      <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Last visit</div>
+                      <p className="text-xs text-muted-foreground">{last.date} — {last.development}</p>
+                    </div>
+                  );
+                })()}
+
+              </div>
+            )}
+          </Card>
+        )}
+
         <div className="text-xs font-mono uppercase tracking-widest text-muted-foreground">AI review panel</div>
         {fields.map((f) => (
           <Card key={f.id} className="p-4 space-y-2">
@@ -1057,13 +1290,64 @@ function Page() {
 
         <Card className="p-4 space-y-2">
           <div className="flex items-center gap-2 text-sm font-semibold"><ShieldCheck className="h-4 w-4 text-accent" /> Medication safety</div>
-          {(liveSafetyAlerts.length > 0 ? liveSafetyAlerts : safetyAlerts).map((a, i) => (
+          {(liveSafetyAlerts).map((a, i) => (
             <div key={i} className="text-xs flex gap-2 items-start">
               <AlertTriangle className={`h-3.5 w-3.5 mt-0.5 ${a.level === "HIGH" || a.level === "High" ? "text-destructive" : "text-muted-foreground"}`} />
               <div><b>{a.level}:</b> {a.msg}</div>
             </div>
           ))}
         </Card>
+
+        {/* Consultation history counter */}
+        {medicalRecord && (
+          <div className="rounded-lg border border-border p-4 mt-4">
+            <h3 className="text-sm font-medium text-muted-foreground mb-1">Consultation history</h3>
+            <p className="text-2xl font-semibold">
+              {medicalRecord.total_consultations}
+              <span className="text-sm font-normal text-muted-foreground ml-2">
+                total visit{medicalRecord.total_consultations !== 1 ? "s" : ""}
+              </span>
+            </p>
+          </div>
+        )}
+
+        {/* Active conditions */}
+        {medicalRecord?.active_conditions?.length > 0 && (
+          <div className="rounded-lg border border-border p-4 mt-4">
+            <h3 className="text-sm font-medium text-muted-foreground mb-2">Active conditions</h3>
+            <ul className="space-y-1">
+              {medicalRecord.active_conditions.map((c: any, i: number) => (
+                <li key={i} className="flex items-center justify-between text-sm">
+                  <span>{c.name}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {c.icd10_code !== "PENDING_VALIDATION" ? c.icd10_code : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Current medications */}
+        {medicalRecord?.current_medications !== undefined && (
+          <div className="rounded-lg border border-border p-4 mt-4">
+            <h3 className="text-sm font-medium text-muted-foreground mb-2">Current medications</h3>
+            {medicalRecord.current_medications.length === 0 ? (
+              <p className="text-sm text-muted-foreground italic">No medications prescribed</p>
+            ) : (
+              <ul className="space-y-1">
+                {medicalRecord.current_medications.map((m: any, i: number) => (
+                  <li key={i} className="text-sm">
+                    {typeof m === "string" ? m : m.name}
+                    {m.dosage && (
+                      <span className="text-xs text-muted-foreground ml-2">{m.dosage}</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
 
         <Button className="w-full" size="lg" disabled={!allApproved || hasCritical || transcribing} onClick={finalize}>
           Finalize EHR & download PDF

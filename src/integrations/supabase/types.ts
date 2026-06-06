@@ -181,6 +181,7 @@ export type Database = {
           intake_english_translation: string | null
           consult_original_transcript: string | null
           consult_english_transcript: string | null
+          record_name: string | null
         }
         Insert: {
           id: string
@@ -206,6 +207,7 @@ export type Database = {
           intake_english_translation?: string | null
           consult_original_transcript?: string | null
           consult_english_transcript?: string | null
+          record_name?: string | null
         }
         Update: {
           id?: string
@@ -231,6 +233,7 @@ export type Database = {
           intake_english_translation?: string | null
           consult_original_transcript?: string | null
           consult_english_transcript?: string | null
+          record_name?: string | null
         }
         Relationships: [
           {

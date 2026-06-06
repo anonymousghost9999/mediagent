@@ -9,7 +9,7 @@ import {
   ClipboardList, Stethoscope, FileDown,
 } from "lucide-react";
 
-export const Route = createFileRoute("/patient/consultation/$id/report")({ component: Page });
+export const Route = createFileRoute("/patient/consultation_/$id/report")({ component: Page });
 
 function Page() {
   const { id } = Route.useParams();
