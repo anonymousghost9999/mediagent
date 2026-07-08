@@ -1,3 +1,10 @@
+Contributors:
+* [@phanindragollapalli](https://github.com/phanindragollapalli)
+* [@anonymousghost9999](https://github.com/anonymousghost9999)
+* [@rider9600](https://github.com/rider9600)
+* [@YVKartikeya9](https://github.com/YVKartikeya9)
+
+Note : All four of us contributed equally in this project and we are planning to expand this project.
 # MediAgent
 
 MediAgent is a doctor-in-the-loop hospital workflow and EHR system with an AI-assisted intake and consultation pipeline.
