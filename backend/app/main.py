@@ -1,3 +1,19 @@
+"""
+========================================================================================
+FASTAPI REST API SERVER - MEDIAGENT AGENTIC PIPELINE
+========================================================================================
+Role in Architecture:
+- Exposes RESTful HTTP endpoints that connect the React frontend to the Multi-Agent Orchestrator.
+- Endpoints cover the full clinical lifecycle:
+    1. /api/patients -> List queued patients sorted by ESI severity score.
+    2. /api/intake & /api/intake-audio -> Ingests patient symptoms and triggers Agent 1.
+    3. /api/consult/start -> Initializes consultation session for a patient.
+    4. /api/consult/transcribe-extract -> Ambient audio listening & clinical entity extraction via Agent 2.
+    5. /api/consult/session-summary -> Intermediate narrative and action item generation.
+    6. /api/consult/finalize -> Gated physician sign-off triggering Agent 3 for safety check and EHR persist.
+========================================================================================
+"""
+
 import os
 import sys
 import io
@@ -29,6 +45,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # Define request models
 class PatientIntakeRequest(BaseModel):

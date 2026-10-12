@@ -1,7 +1,24 @@
+"""
+========================================================================================
+MULTI-AGENT ORCHESTRATOR SERVICE
+========================================================================================
+Role in Architecture:
+- Acts as the central State Coordinator and Process Flow Manager for the multi-agent system.
+- Enforces clear phase transitions across the four stages of the clinical lifecycle:
+    Stage 1: Patient Opens App & Completes Intake -> invokes Agent 1 (patient_agent)
+    Stage 2: Doctor Opens Queue & Starts Consultation -> updates status & timeline
+    Stage 3: Doctor Records & Consult Ends -> invokes Agent 2 (consultation_agent)
+    Stage 4: Doctor Reviews & Approves -> invokes Agent 3 (ehr_agent)
+- Bridges the stateless agent workers with persistent storage (Supabase / local DB).
+- Resolves ID polymorphic lookups (handling cases where frontend submits consultation UUID vs patient UUID).
+========================================================================================
+"""
+
 import app.database as db
 import app.services.patient_agent as patient_agent
 import app.services.consultation_agent as consultation_agent
 import app.services.ehr_agent as ehr_agent
+
 
 def orchestrate_patient_intake(
     patient_id: str,
@@ -17,8 +34,14 @@ def orchestrate_patient_intake(
     mode: str = "chat"
 ) -> dict:
     """
-    Step 1: Patient Opens App & Completes Intake.
-    Saves patient basic profile, runs the Patient Agent, and appends intake data to timeline.
+    Stage 1: Patient Intake & Triage Execution
+    
+    Workflow:
+    1. Persists baseline patient demographic profile and declared medical history to DB.
+    2. Dispatches payload to Agent 1 (Patient Agent).
+    3. Handles speech transcription, medical translation, and ESI triage calculation.
+    4. Records conversation events into the patient timeline.
+    5. Returns intake report containing triage severity and localized patient response.
     """
     if allergies is None:
         allergies = []
@@ -36,7 +59,7 @@ def orchestrate_patient_intake(
         "status": "waiting"
     })
     
-    # Call the Patient Agent
+    # Call Agent 1 (Patient Agent)
     intake_report = patient_agent.run_patient_intake(
         patient_id=patient_id,
         consultation_id=consultation_id,
@@ -48,6 +71,7 @@ def orchestrate_patient_intake(
     
     # Timeline event created by the Patient Agent is saved inside run_patient_intake
     return intake_report
+
 
 def orchestrate_start_consultation(patient_id: str) -> dict:
     """

@@ -1,3 +1,19 @@
+"""
+========================================================================================
+CLI AGENT DEMO & SIMULATION RUNNER (run_agents_demo.py)
+========================================================================================
+Role in Architecture:
+- Complete standalone demonstration script for testing and showcasing the entire 
+  three-agent pipeline in the terminal without requiring the React frontend.
+- Simulates the full clinical trajectory:
+    Phase 1: Ingests patient symptoms (Telugu / Hindi / English), tests Agent 1 ESI scoring.
+    Phase 2: Starts doctor consultation and updates the encounter status.
+    Phase 3: Passes dialogue transcript into Agent 2 for ambient entity extraction.
+    Phase 4: Simulates Doctor review/edits and triggers Agent 3 for safety checks & EHR persistence.
+- Prints rich ANSI colored output and logs the resulting longitudinal timeline.
+========================================================================================
+"""
+
 import sys
 import os
 import time
@@ -23,6 +39,7 @@ YELLOW = "\033[93m"
 RED = "\033[91m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
+
 
 def print_header(title):
     print(f"\n{BOLD}{BLUE}{'='*60}\n{title.center(60)}\n{'='*60}{RESET}")

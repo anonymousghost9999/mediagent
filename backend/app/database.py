@@ -1,3 +1,21 @@
+"""
+========================================================================================
+PERSISTENCE LAYER: DUAL-MODE REPOSITORY (SUPABASE POSTGRESQL + LOCAL JSON FALLBACK)
+========================================================================================
+Role in Architecture:
+- Provides resilient CRUD persistence for all multi-agent entities:
+    1. Patients / Profiles (demographics, declared history, triage severity score).
+    2. Consultations (symptoms, transcripts, doctor notes, safety audit reports).
+    3. Shared EHR Timelines (append-only event stream for patient-doctor encounters).
+    4. Longitudinal Medical Records (active conditions, allergy union, medication history).
+    5. Finalized EHR Records (FHIR/SOAP structured records with doctor sign-off).
+- Dual Storage Strategy:
+    - Primary: Supabase PostgreSQL with Row Level Security (RLS) policies.
+    - Fallback: Local JSON database (db_fallback.json) ensuring zero-crash capability 
+      during offline demos, hackathons, or air-gapped clinical sandbox environments.
+========================================================================================
+"""
+
 import os
 import json
 import uuid
@@ -39,6 +57,7 @@ if SUPABASE_URL and SUPABASE_KEY:
         print(f"[WARNING] Failed to initialize Supabase client: {e}. Falling back to LOCAL mode.")
 else:
     print("[INFO] Database running in LOCAL JSON mode.")
+
 def save_patient(patient_data: dict) -> dict:
     """
     Saves a patient record. In Supabase mode, this writes to the profiles table.

@@ -1,3 +1,33 @@
+"""
+========================================================================================
+AGENT 3: LONGITUDINAL EHR COMPILER & CLINICAL SAFETY AUDITOR AGENT
+========================================================================================
+Role in Architecture:
+- Final authority agent in the consultation lifecycle.
+- Enforces the "Doctor-in-the-Loop" Hierarchy of Truth:
+    1. doctor_edits (Physician-edited IM Report & clinical notes) — ALWAYS WINS.
+    2. consultation_output (AI extracted facts from ambient conversation).
+    3. patient_intake_output (Patient-reported symptoms and history).
+- Deterministic Guardrails:
+    - Validates ICD-10 codes against strict international regex format (e.g. 'J06.9').
+      If invalid, demotes to 'PENDING_VALIDATION' rather than corrupting health records.
+- Longitudinal Episodic Memory Management:
+    - Maintains cumulative active conditions (tracks first_seen and last_seen).
+    - Preserves all known allergies via union-merge (never removes past reported allergies).
+    - Archives prior medication courses into history while installing current prescriptions.
+    - Limits recent developments to the last 10 entries to avoid context bloating.
+- Safety & Verification:
+    - Runs automated Clinical Pharmacist safety audits checking:
+        a) Drug-allergy interactions against longitudinal allergy records.
+        b) Drug-drug interactions between newly prescribed medications.
+        c) Interactions between new prescriptions and pre-existing chronic medications.
+- Communication & Administrative Automation:
+    - Synthesizes patient-friendly, bilingual discharge instructions (translated to patient's native tongue).
+    - Generates insurance pre-authorization summaries with clinical justification.
+    - Persists audit logs and structured timeline events to the database.
+========================================================================================
+"""
+
 import re
 import copy
 from datetime import datetime, timezone
@@ -6,11 +36,13 @@ import app.database as db
 import app.services.llm_service as llm
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Helpers
+# Helpers & Validation Rules
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Standard ICD-10 regular expression: single uppercase letter, 2 digits, optional decimal with 1-4 digits
 ICD10_RE = re.compile(r"^[A-Z][0-9]{2}(\.[0-9]{1,4})?$")
 
+# Default schema template for initializing new longitudinal medical records
 _BLANK_RECORD = {
     "total_consultations": 0,
     "active_conditions": [],
@@ -23,10 +55,14 @@ _BLANK_RECORD = {
 
 
 def _validate_icd10(code: str) -> tuple:
-    """Returns (code, is_valid). Invalid codes become 'PENDING_VALIDATION'."""
+    """
+    Validates ICD-10 diagnostic codes using deterministic regex pattern matching.
+    Returns (sanitized_code, is_valid_boolean). Invalid codes fall back to 'PENDING_VALIDATION'.
+    """
     if code and ICD10_RE.match(str(code).strip()):
         return str(code).strip(), True
     return "PENDING_VALIDATION", False
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────

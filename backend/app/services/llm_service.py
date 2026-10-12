@@ -1,3 +1,25 @@
+"""
+========================================================================================
+LLM & SPEECH SERVICES LAYER (OPENROUTER + SARVAM AI)
+========================================================================================
+Role in Architecture:
+- Gateway for all foundation model calls (Gemini 2.5 Flash via OpenRouter) and speech models.
+- Speech Recognition & Synthesis:
+    - Sarvam Saaras V3 for Indian language Speech-to-Text (STT).
+    - Sarvam Bulbul V3 for Text-to-Speech (TTS).
+    - Contextual Medical Translation preserving clinical dosage, severity, and terminology.
+- Vision / Multimodal OCR:
+    - Analyzes scanned lab records, physical documents, or handwritten prescriptions.
+- Clinical Prompts & Inference Tasks:
+    1. analyze_symptoms_and_history -> Multi-turn slot filling, ESI triage, differential diagnoses.
+    2. extract_medical_summary -> Ambient dialogue filter, ICD-10 extraction, prescription parsing.
+    3. evaluate_drug_safety -> Clinical pharmacist safety audit (allergy + drug-drug conflicts).
+    4. generate_session_summary -> Narrative encounter overview, key findings, and action items.
+- Robust JSON Parsing:
+    - parse_json_robust handles LLM quirks (markdown blocks, trailing commas, quote repair).
+========================================================================================
+"""
+
 import os
 import json
 import base64
@@ -13,6 +35,7 @@ if OPENROUTER_API_KEY:
     print("[INFO] OpenRouter API configured successfully.")
 else:
     print("[WARNING] No OPENROUTER_API_KEY provided.")
+
 
 def map_language_to_bcp47(lang_str: str) -> str:
     """
